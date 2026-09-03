@@ -115,8 +115,7 @@ fn gen_idl_type_def_enum(enm: &syn::ItemEnum) -> Result<(TokenStream, Vec<syn::T
     if get_borsh_use_discriminant(&enm.attrs)? {
         return Err(syn::Error::new_spanned(
             &enm.ident,
-            "IDL build does not support `#[borsh(use_discriminant = true)]`; the current IDL spec \
-             cannot represent explicit enum discriminants",
+            "IDL building does not support custom discriminators",
         ));
     }
 
