@@ -2142,7 +2142,7 @@ fn podvec_oversized_max_account_field_does_not_compile() {
 use anchor_lang::prelude::*;
 use anchor_lang::pod::{PodU8, PodVec};
 
-declare_id!("PodVecMax1111111111111111111111111111111111");
+declare_id!("11111111111111111111111111111111");
 
 #[account]
 pub struct Oversized {
@@ -2150,7 +2150,67 @@ pub struct Oversized {
 }
 "#,
     )
-    .expect_fail(&["PodVec's length prefix is a u16"]);
+    .expect_fail(&["MAX must be <= 65_535"]);
+}
+
+#[test]
+fn podvec_oversized_max_const_account_field_does_not_compile() {
+    let source = r#"
+use anchor_lang::prelude::*;
+use anchor_lang::pod::{PodU64, PodVec};
+
+declare_id!("11111111111111111111111111111111");
+
+pub const MAX_VALIDATORS: usize = 70000;
+
+pub struct Limits;
+impl Limits {
+    pub const MAX: usize = MAX_VALIDATORS;
+}
+
+#[account]
+#[repr(C)]
+pub struct ValidatorRegistry {
+    pub count: PodU64,
+    pub validators: PodVec<PodU64, CAPACITY_EXPR>,
+}
+"#;
+
+    for (name, capacity) in [
+        ("podvec_account_named_const", "MAX_VALIDATORS"),
+        ("podvec_account_const_expr", "{ u16::MAX as usize + 1 }"),
+        ("podvec_account_associated_const", "{ Limits::MAX }"),
+    ] {
+        CompileCase::new(name, &source.replace("CAPACITY_EXPR", capacity))
+            .expect_fail(&["MAX must be <= 65_535"]);
+    }
+}
+
+#[test]
+fn podvec_max_u16_const_account_field_compiles() {
+    CompileCase::new(
+        "podvec_max_u16_const_account_field",
+        r#"
+use anchor_lang::prelude::*;
+use anchor_lang::pod::{PodU64, PodVec};
+
+declare_id!("11111111111111111111111111111111");
+
+pub const MAX_VALIDATORS: usize = u16::MAX as usize;
+
+#[account]
+pub struct ValidatorRegistry {
+    pub count: PodU64,
+    pub validators: PodVec<PodU64, MAX_VALIDATORS>,
+    pub empty: anchor_lang::pod::PodVec<PodU64, 0>,
+    #[cfg(any())]
+    pub disabled: PodVec<PodU64, { u16::MAX as usize + 1 }>,
+    #[cfg(any())]
+    pub also_disabled: PodVec<PodU64, UNKNOWN_CAPACITY>,
+}
+"#,
+    )
+    .expect_pass();
 }
 
 #[test]

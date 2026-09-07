@@ -2360,9 +2360,7 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .iter()
                 .filter_map(|field| {
                     let field_name = field.ident.as_ref()?.to_string();
-                    let msg = diagnose_non_pod_field(&field.ty, &field_name, &name_str).or_else(
-                        || diagnose_oversized_pod_vec(&field.ty, &field_name, &name_str),
-                    )?;
+                    let msg = diagnose_non_pod_field(&field.ty, &field_name, &name_str)?;
                     let cfg_attrs = cfg_attrs(&field.attrs);
                     let span = field.ty.span();
                     Some(quote::quote_spanned!(span=>
@@ -2401,9 +2399,11 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .map(|field| {
                     let ty = &field.ty;
                     let cfg_attrs = cfg_attrs(&field.attrs);
+                    let capacity_check = pod_vec_capacity_check(ty);
                     quote! {
                         #(#cfg_attrs)*
                         {
+                            #capacity_check
                             __size += core::mem::size_of::<#ty>();
                         }
                     }
@@ -2681,42 +2681,17 @@ fn diagnose_non_pod_field(ty: &Type, field_name: &str, struct_name: &str) -> Opt
     }
 }
 
-/// Reject `PodVec<T, MAX>` account fields whose `MAX` exceeds the `PodU16`
-/// length prefix (`u16::MAX`). The inherent `_MAX_FITS_U16` assert only fires
-/// once a method monomorphizes it; catching the literal here fails at
-/// `#[account]` expansion before the type is accepted as a zero-copy field.
-fn diagnose_oversized_pod_vec(ty: &Type, field_name: &str, struct_name: &str) -> Option<String> {
+/// Force the capacity invariant while evaluating the account's layout const,
+/// even if no `PodVec` methods are used. Rust resolves and evaluates `MAX`,
+/// including named constants and const expressions that the macro cannot
+/// evaluate from syntax alone.
+fn pod_vec_capacity_check(ty: &Type) -> Option<TokenStream2> {
     let Type::Path(tp) = ty else { return None };
     let seg = tp.path.segments.last()?;
     if seg.ident != "PodVec" {
         return None;
     }
-    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
-        return None;
-    };
-    for arg in &args.args {
-        let syn::GenericArgument::Const(expr) = arg else {
-            continue;
-        };
-        let syn::Expr::Lit(syn::ExprLit {
-            lit: syn::Lit::Int(n),
-            ..
-        }) = expr
-        else {
-            continue;
-        };
-        let Ok(val) = n.base10_parse::<u128>() else {
-            continue;
-        };
-        if val > u16::MAX as u128 {
-            return Some(format!(
-                "field `{field_name}` on `#[account] struct {struct_name}` uses `PodVec<_, \
-                 {val}>`, but PodVec's length prefix is a u16 (max 65535). Reduce MAX to <= \
-                 65535, or use a larger length-prefix wrapper."
-            ));
-        }
-    }
-    None
+    Some(quote::quote_spanned!(ty.span()=> let _ = <#ty>::CAPACITY;))
 }
 
 // ---------------------------------------------------------------------------
