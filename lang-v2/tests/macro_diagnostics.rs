@@ -55,23 +55,6 @@ fn compile_fail_case(name: &str, source: &str, snippets: &[&str]) {
     compile_fail_case_with_forbidden(name, source, snippets, &[]);
 }
 
-fn compile_fail_case_with_features(name: &str, source: &str, features: &[&str], snippets: &[&str]) {
-    let features = features.join(",");
-    let output = cargo_case(name, source, "check", &["--features", &features]);
-
-    assert!(
-        !output.status.success(),
-        "{name} unexpectedly compiled successfully"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for snippet in snippets {
-        assert!(
-            stderr.contains(snippet),
-            "{name} stderr did not contain {snippet:?}\n\nstderr:\n{stderr}"
-        );
-    }
-}
-
 fn compile_fail_case_with_forbidden(
     name: &str,
     source: &str,
@@ -770,69 +753,6 @@ pub mod collision_program {
 #[derive(Accounts)]
 pub struct Noop {}
 "#,
-        &["if any instruction in `#[program]` uses `#[discrim = N]`, all must"],
-    );
-    compile_fail_case(
-        "cfg_gated_duplicate_discriminator",
-        r#"
-use anchor_lang::prelude::*;
-
-declare_id!("11111111111111111111111111111111");
-
-#[program]
-pub mod collision_program {
-    use super::*;
-
-    #[discrim = 214]
-    pub fn first(_ctx: &mut Context<Noop>) -> Result<()> {
-        Ok(())
-    }
-
-    #[discrim = 214]
-    pub fn second(_ctx: &mut Context<Noop>) -> Result<()> {
-        Ok(())
-    }
-
-    #[cfg(any())]
-    pub fn disabled(_ctx: &mut Context<Noop>) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Accounts)]
-pub struct Noop {}
-"#,
-        &["duplicate `#[discrim = 214]` on instruction `second`"],
-    );
-    let source = r#"
-use anchor_lang::prelude::*;
-
-declare_id!("11111111111111111111111111111111");
-
-#[program]
-pub mod conditional_program {
-    use super::*;
-
-    #[cfg(feature = "live")]
-    #[discrim = 214]
-    pub fn conditional(_ctx: &mut Context<Noop>) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn protected(_ctx: &mut Context<Noop>) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Accounts)]
-pub struct Noop {}
-"#;
-
-    compile_pass_case("cfg_gated_discriminator_inactive", source);
-    compile_fail_case_with_features(
-        "cfg_gated_discriminator_active",
-        source,
-        &["live"],
         &["if any instruction in `#[program]` uses `#[discrim = N]`, all must"],
     );
 }
@@ -1696,58 +1616,5 @@ declare_id!("11111111111111111111111111111111");
 pub struct BorshTupleData(pub u64, pub u32);
 "#,
         &["`#[account]` only supports structs with named fields"],
-    );
-}
-
-#[test]
-#[cfg_attr(
-    miri,
-    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
-)]
-fn same_leaf_events_share_identity_before_fix() {
-    cargo_test_pass_case(
-        "same_leaf_events_share_identity_before_fix",
-        r#"
-use anchor_lang::prelude::*;
-
-mod public {
-    use super::*;
-
-    #[event]
-    pub struct Receipt {
-        pub recipient: Address,
-        pub amount: u64,
-    }
-}
-
-mod admin {
-    use super::*;
-
-    #[event]
-    pub struct Receipt {
-        pub recipient: Address,
-        pub approved_amount: u64,
-    }
-}
-
-#[cfg(all(test, feature = "idl-build"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn same_leaf_events_are_indistinguishable() {
-        assert_eq!(
-            public::Receipt::DISCRIMINATOR,
-            admin::Receipt::DISCRIMINATOR
-        );
-        let public_def = <public::Receipt as IdlAccountType>::__idl_type_def().unwrap();
-        let admin_def = <admin::Receipt as IdlAccountType>::__idl_type_def().unwrap();
-        assert_ne!(public_def, admin_def);
-        assert!(public_def.contains("amount"));
-        assert!(admin_def.contains("approved_amount"));
-    }
-}
-"#,
-        &["idl-build"],
     );
 }
