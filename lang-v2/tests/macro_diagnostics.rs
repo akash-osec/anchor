@@ -740,7 +740,7 @@ pub struct Noop {}
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
-fn cfg_gated_handler_rejects_unconditional_discriminator_collision() {
+fn cfg_gated_discriminator_validation() {
     compile_fail_case(
         "cfg_gated_discriminator_collision",
         r#"
@@ -772,14 +772,6 @@ pub struct Noop {}
 "#,
         &["if any instruction in `#[program]` uses `#[discrim = N]`, all must"],
     );
-}
-
-#[test]
-#[cfg_attr(
-    miri,
-    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
-)]
-fn cfg_gated_handler_rejects_duplicate_custom_discriminators() {
     compile_fail_case(
         "cfg_gated_duplicate_discriminator",
         r#"
@@ -812,14 +804,6 @@ pub struct Noop {}
 "#,
         &["duplicate `#[discrim = 214]` on instruction `second`"],
     );
-}
-
-#[test]
-#[cfg_attr(
-    miri,
-    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
-)]
-fn cfg_gated_discriminator_checks_follow_active_configuration() {
     let source = r#"
 use anchor_lang::prelude::*;
 
@@ -1712,5 +1696,58 @@ declare_id!("11111111111111111111111111111111");
 pub struct BorshTupleData(pub u64, pub u32);
 "#,
         &["`#[account]` only supports structs with named fields"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn same_leaf_events_share_identity_before_fix() {
+    cargo_test_pass_case(
+        "same_leaf_events_share_identity_before_fix",
+        r#"
+use anchor_lang::prelude::*;
+
+mod public {
+    use super::*;
+
+    #[event]
+    pub struct Receipt {
+        pub recipient: Address,
+        pub amount: u64,
+    }
+}
+
+mod admin {
+    use super::*;
+
+    #[event]
+    pub struct Receipt {
+        pub recipient: Address,
+        pub approved_amount: u64,
+    }
+}
+
+#[cfg(all(test, feature = "idl-build"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_leaf_events_are_indistinguishable() {
+        assert_eq!(
+            public::Receipt::DISCRIMINATOR,
+            admin::Receipt::DISCRIMINATOR
+        );
+        let public_def = <public::Receipt as IdlAccountType>::__idl_type_def().unwrap();
+        let admin_def = <admin::Receipt as IdlAccountType>::__idl_type_def().unwrap();
+        assert_ne!(public_def, admin_def);
+        assert!(public_def.contains("amount"));
+        assert!(admin_def.contains("approved_amount"));
+    }
+}
+"#,
+        &["idl-build"],
     );
 }
