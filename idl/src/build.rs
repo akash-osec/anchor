@@ -316,6 +316,102 @@ fn install_toolchain_if_needed(toolchain: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use {
+        super::{insert_type, verify},
+        anchor_lang_idl_spec::{
+            Idl, IdlEvent, IdlMetadata, IdlSerialization, IdlTypeDef, IdlTypeDefTy,
+        },
+        std::collections::BTreeMap,
+    };
+
+    fn event(name: &str, discriminator: &[u8]) -> IdlEvent {
+        IdlEvent {
+            name: name.into(),
+            discriminator: discriminator.into(),
+        }
+    }
+
+    fn idl(events: Vec<IdlEvent>) -> Idl {
+        Idl {
+            address: String::new(),
+            metadata: IdlMetadata {
+                name: "test".into(),
+                version: "0.1.0".into(),
+                spec: "0.1.0".into(),
+                description: None,
+                repository: None,
+                dependencies: vec![],
+                contact: None,
+                deployments: None,
+            },
+            docs: vec![],
+            instructions: vec![],
+            accounts: vec![],
+            events,
+            errors: vec![],
+            types: vec![],
+            constants: vec![],
+        }
+    }
+
+    fn type_def(name: &str, field: &str) -> IdlTypeDef {
+        IdlTypeDef {
+            name: name.into(),
+            docs: vec![field.into()],
+            serialization: IdlSerialization::Borsh,
+            repr: None,
+            generics: vec![],
+            ty: IdlTypeDefTy::Struct { fields: None },
+        }
+    }
+
+    #[test]
+    fn verify_rejects_duplicate_event_names() {
+        let error = verify(&idl(vec![event("Receipt", &[1]), event("Receipt", &[2])]))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Duplicate event name"));
+    }
+
+    #[test]
+    fn verify_rejects_equal_event_discriminators() {
+        let error = verify(&idl(vec![
+            event("PublicReceipt", &[1]),
+            event("AdminReceipt", &[1]),
+        ]))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("Ambiguous discriminators for events"));
+    }
+
+    #[test]
+    fn verify_rejects_event_discriminator_prefixes_in_both_orders() {
+        for events in [
+            vec![event("Short", &[1]), event("Long", &[1, 2])],
+            vec![event("Long", &[1, 2]), event("Short", &[1])],
+        ] {
+            let error = verify(&idl(events)).unwrap_err().to_string();
+            assert!(error.contains("Ambiguous discriminators for events"));
+        }
+    }
+
+    #[test]
+    fn insert_type_deduplicates_equal_definitions_and_rejects_conflicts() {
+        let mut types = BTreeMap::new();
+        let first = type_def("Receipt", "amount");
+        insert_type(&mut types, first.clone()).unwrap();
+        insert_type(&mut types, first).unwrap();
+        assert_eq!(types.len(), 1);
+
+        let error = insert_type(&mut types, type_def("Receipt", "approved_amount"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Conflicting IDL type definitions"));
+    }
+}
+
 /// Convert paths to name if there are no conflicts.
 fn convert_module_paths(idl: Idl) -> Idl {
     let idl = serde_json::to_string(&idl).unwrap();
