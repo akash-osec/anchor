@@ -6,7 +6,6 @@
 
 extern crate alloc;
 
-#[cfg(feature = "guardrails")]
 use anchor_lang::{require, Id};
 use {
     alloc::vec::Vec,
@@ -23,7 +22,6 @@ pub(crate) fn multisig_signer_addresses<'a>(accounts: &[CpiHandle<'a>]) -> Vec<&
     accounts.iter().map(CpiHandle::address).collect()
 }
 
-#[cfg(feature = "guardrails")]
 #[inline]
 pub(crate) fn validate_token_interface_program(program_id: &Address) -> Result<(), ProgramError> {
     require!(
@@ -31,12 +29,6 @@ pub(crate) fn validate_token_interface_program(program_id: &Address) -> Result<(
             || anchor_lang::address_eq(program_id, &anchor_lang::programs::Token2022::id()),
         ProgramError::IncorrectProgramId
     );
-    Ok(())
-}
-
-#[cfg(not(feature = "guardrails"))]
-#[inline]
-pub(crate) fn validate_token_interface_program(_program_id: &Address) -> Result<(), ProgramError> {
     Ok(())
 }
 
@@ -488,4 +480,5 @@ mod tests {
         assert_eq!(ix.accounts[3].pubkey.as_ref(), [4; 32].as_slice());
         assert_eq!(ix.accounts[4].pubkey.as_ref(), [5; 32].as_slice());
     }
+
 }
