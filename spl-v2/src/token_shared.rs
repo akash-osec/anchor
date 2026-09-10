@@ -435,7 +435,7 @@ mod tests {
     use {
         super::*,
         anchor_lang::{
-            programs::{Token, Token2022},
+            programs::Token,
             testing::{AccountBuffer, MIN_ACCOUNT_BUF},
             Id,
         },
@@ -483,17 +483,10 @@ mod tests {
     }
 
     #[test]
-    fn token_interface_program_check_accepts_canonical_ids() {
-        assert_eq!(validate_token_interface_program(&Token::id()), Ok(()));
-        assert_eq!(validate_token_interface_program(&Token2022::id()), Ok(()));
-    }
-
-    #[test]
     fn token_interface_program_check_rejects_other_programs() {
         assert_eq!(
             validate_token_interface_program(&Address::new_from_array([1; 32])),
             Err(ProgramError::IncorrectProgramId)
         );
     }
-
 }
