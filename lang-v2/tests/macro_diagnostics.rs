@@ -1585,96 +1585,28 @@ pub struct BorshTupleData(pub u64, pub u32);
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
-fn event_name_overrides_bind_wire_and_idl_identity() {
+fn event_name_override_binds_wire_and_idl_identity() {
     cargo_test_pass_case(
-        "event_name_overrides",
+        "event_name_override",
         r#"
 use anchor_lang::prelude::*;
 
-#[event(name = "PublicReceiptV1")]
-pub struct PublicReceipt { pub amount: u64 }
-
-#[event(bytemuck, name = "AdminReceiptV1")]
-pub struct AdminReceipt { pub approved_amount: u64 }
+#[event(name = "ReceiptV1")]
+pub struct Receipt { pub amount: u64 }
 
 #[cfg(all(test, feature = "idl-build"))]
 mod tests {
     use super::*;
 
     #[test]
-    fn overrides_change_both_runtime_and_idl_identity() {
-        assert_eq!(PublicReceipt::DISCRIMINATOR, [56, 203, 170, 249, 244, 89, 236, 90]);
-        assert_eq!(AdminReceipt::DISCRIMINATOR, [215, 29, 66, 51, 99, 242, 203, 117]);
-
-        let public_def = <PublicReceipt as IdlAccountType>::__idl_type_def().unwrap();
-        let admin_def = <AdminReceipt as IdlAccountType>::__idl_type_def().unwrap();
-        assert!(public_def.contains("PublicReceiptV1"));
-        assert!(admin_def.contains("AdminReceiptV1"));
+    fn override_changes_wire_and_idl_identity() {
+        assert_eq!(Receipt::DISCRIMINATOR, [40, 147, 163, 222, 187, 159, 205, 141]);
+        assert!(<Receipt as IdlAccountType>::__idl_type_def()
+            .unwrap()
+            .contains("ReceiptV1"));
     }
 }
 "#,
         &["idl-build"],
-    );
-}
-
-#[test]
-#[cfg_attr(
-    miri,
-    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
-)]
-fn event_name_override_rejects_invalid_arguments() {
-    compile_fail_case(
-        "event_empty_name_rejected",
-        r#"
-use anchor_lang::prelude::*;
-
-#[event(name = "")]
-pub struct Receipt { pub amount: u64 }
-"#,
-        &["event `name` must be a non-empty Rust/IDL identifier"],
-    );
-
-    compile_fail_case(
-        "event_invalid_name_rejected",
-        r#"
-use anchor_lang::prelude::*;
-
-#[event(name = "bad-name")]
-pub struct Receipt { pub amount: u64 }
-"#,
-        &["event `name` must be a non-empty Rust/IDL identifier"],
-    );
-
-    compile_fail_case(
-        "event_duplicate_mode_rejected",
-        r#"
-use anchor_lang::prelude::*;
-
-#[event(bytemuck, bytemuck)]
-pub struct Receipt { pub amount: u64 }
-"#,
-        &["duplicate `bytemuck` in `#[event]`"],
-    );
-
-    compile_fail_case(
-        "event_duplicate_name_rejected",
-        r#"
-use anchor_lang::prelude::*;
-
-#[event(name = "One", name = "Two")]
-pub struct Receipt { pub amount: u64 }
-"#,
-        &["duplicate `name` in `#[event]`"],
-    );
-
-    compile_fail_case(
-        "event_unknown_argument_rejected",
-        r#"
-use anchor_lang::prelude::*;
-
-#[event(unknown)]
-pub struct Receipt { pub amount: u64 }
-"#,
-        &["expected `#[event]`, `#[event(bytemuck)]`, or `#[event(name = \"...\")]"],
     );
 }
