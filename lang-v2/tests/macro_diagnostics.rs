@@ -55,6 +55,23 @@ fn compile_fail_case(name: &str, source: &str, snippets: &[&str]) {
     compile_fail_case_with_forbidden(name, source, snippets, &[]);
 }
 
+fn compile_fail_case_with_features(name: &str, source: &str, features: &[&str], snippets: &[&str]) {
+    let features = features.join(",");
+    let output = cargo_case(name, source, "check", &["--features", &features]);
+
+    assert!(
+        !output.status.success(),
+        "{name} unexpectedly compiled successfully"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for snippet in snippets {
+        assert!(
+            stderr.contains(snippet),
+            "{name} stderr did not contain {snippet:?}\n\nstderr:\n{stderr}"
+        );
+    }
+}
+
 fn compile_fail_case_with_forbidden(
     name: &str,
     source: &str,
@@ -715,6 +732,124 @@ pub mod gated_program {
 #[derive(Accounts)]
 pub struct Noop {}
 "#,
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn cfg_gated_handler_rejects_unconditional_discriminator_collision() {
+    compile_fail_case(
+        "cfg_gated_discriminator_collision",
+        r#"
+use anchor_lang::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[program]
+pub mod collision_program {
+    use super::*;
+
+    #[discrim = 214]
+    pub fn decoy(_ctx: &mut Context<Noop>) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn protected(_ctx: &mut Context<Noop>) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(any())]
+    pub fn disabled(_ctx: &mut Context<Noop>) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct Noop {}
+"#,
+        &["if any instruction in `#[program]` uses `#[discrim = N]`, all must"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn cfg_gated_handler_rejects_duplicate_custom_discriminators() {
+    compile_fail_case(
+        "cfg_gated_duplicate_discriminator",
+        r#"
+use anchor_lang::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[program]
+pub mod collision_program {
+    use super::*;
+
+    #[discrim = 214]
+    pub fn first(_ctx: &mut Context<Noop>) -> Result<()> {
+        Ok(())
+    }
+
+    #[discrim = 214]
+    pub fn second(_ctx: &mut Context<Noop>) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(any())]
+    pub fn disabled(_ctx: &mut Context<Noop>) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct Noop {}
+"#,
+        &["duplicate `#[discrim = 214]` on instruction `second`"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn cfg_gated_discriminator_checks_follow_active_configuration() {
+    let source = r#"
+use anchor_lang::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[program]
+pub mod conditional_program {
+    use super::*;
+
+    #[cfg(feature = "live")]
+    #[discrim = 214]
+    pub fn conditional(_ctx: &mut Context<Noop>) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn protected(_ctx: &mut Context<Noop>) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct Noop {}
+"#;
+
+    compile_pass_case("cfg_gated_discriminator_inactive", source);
+    compile_fail_case_with_features(
+        "cfg_gated_discriminator_active",
+        source,
+        &["live"],
+        &["if any instruction in `#[program]` uses `#[discrim = N]`, all must"],
     );
 }
 
