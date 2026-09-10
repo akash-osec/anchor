@@ -43,7 +43,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "guardrails")]
     fn token_2022_program_check_rejects_other_programs() {
         assert_eq!(
             validate_token_2022_program(&Address::new_from_array([1; 32])),

@@ -435,10 +435,11 @@ mod tests {
     use {
         super::*,
         anchor_lang::{
-            programs::Token,
+            programs::{Token, Token2022},
             testing::{AccountBuffer, MIN_ACCOUNT_BUF},
             Id,
         },
+        solana_program_error::ProgramError,
     };
 
     fn signer(address: [u8; 32]) -> AccountBuffer<{ MIN_ACCOUNT_BUF + 8 }> {
@@ -479,6 +480,20 @@ mod tests {
         assert!(ix.accounts[4].is_signer);
         assert_eq!(ix.accounts[3].pubkey.as_ref(), [4; 32].as_slice());
         assert_eq!(ix.accounts[4].pubkey.as_ref(), [5; 32].as_slice());
+    }
+
+    #[test]
+    fn token_interface_program_check_accepts_canonical_ids() {
+        assert_eq!(validate_token_interface_program(&Token::id()), Ok(()));
+        assert_eq!(validate_token_interface_program(&Token2022::id()), Ok(()));
+    }
+
+    #[test]
+    fn token_interface_program_check_rejects_other_programs() {
+        assert_eq!(
+            validate_token_interface_program(&Address::new_from_array([1; 32])),
+            Err(ProgramError::IncorrectProgramId)
+        );
     }
 
 }
