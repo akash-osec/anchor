@@ -130,10 +130,6 @@ anchor-cli-macros = { path = "cli/cli-macros", version = "=2.0.0-rc.1" }
 anchor-lang-idl = { path = "idl", version = "=0.2.0" }
 anchor-lang-idl-spec = { path = "idl/spec", version = "=0.1.0" }
 
-[patch.crates-io]
-# Temporary until the Wincode float-policy patch is released upstream.
-wincode = { path = "vendor/wincode" }
-
 [profile.release]
 lto = true
 
