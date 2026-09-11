@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use anchor_lang::{
-    account, declare_id, declare_program, AccountDeserialize, Discriminator, BORSH_CONFIG,
+    account, declare_id, declare_program, AccountDeserialize, AnchorDeserialize, AnchorSerialize,
+    Discriminator, BORSH_CONFIG,
 };
 
 declare_id!("11111111111111111111111111111111");
@@ -17,6 +18,18 @@ pub struct PodCounter {
 #[derive(Debug, PartialEq)]
 pub struct BorshCounter {
     pub value: u64,
+}
+
+type FloatAlias = f64;
+
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct HiddenFloat {
+    pub value: FloatAlias,
+}
+
+#[account(borsh)]
+pub struct NestedFloatAccount {
+    pub value: HiddenFloat,
 }
 
 fn full_account_bytes<T>(payload: &[u8]) -> Vec<u8>
@@ -57,6 +70,29 @@ fn borsh_account_deserializes_full_bytes_in_checked_and_unchecked_modes() {
     let unchecked_value = BorshCounter::try_deserialize_unchecked(&mut unchecked).unwrap();
     assert_eq!(unchecked_value.value, 11);
     assert!(unchecked.is_empty());
+}
+
+#[test]
+fn borsh_config_rejects_nested_float_aliases_on_read_and_write() {
+    let finite = NestedFloatAccount {
+        value: HiddenFloat { value: 1.5 },
+    };
+    let payload = anchor_lang::wincode::config::serialize(&finite, BORSH_CONFIG).unwrap();
+    let full = full_account_bytes::<NestedFloatAccount>(&payload);
+    let mut checked = full.as_slice();
+    let decoded = NestedFloatAccount::try_deserialize(&mut checked).unwrap();
+    assert_eq!(decoded.value.value.to_bits(), finite.value.value.to_bits());
+    assert!(checked.is_empty());
+
+    let nan = NestedFloatAccount {
+        value: HiddenFloat { value: f64::NAN },
+    };
+    assert!(anchor_lang::wincode::config::serialize(&nan, BORSH_CONFIG).is_err());
+
+    let nan_payload = f64::NAN.to_le_bytes();
+    let nan_full = full_account_bytes::<NestedFloatAccount>(&nan_payload);
+    let mut nan_buf = nan_full.as_slice();
+    assert!(NestedFloatAccount::try_deserialize(&mut nan_buf).is_err());
 }
 
 #[test]

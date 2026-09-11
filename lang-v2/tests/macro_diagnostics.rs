@@ -8,6 +8,7 @@ fn cargo_case(
 ) -> std::process::Output {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let crate_dir = manifest_dir.join("target/macro-diagnostics").join(name);
+    let wincode_dir = manifest_dir.join("../vendor/wincode");
     // Keep sources isolated for clear per-case diagnostics, but share Cargo
     // artifacts across cases. The Rust test harness may invoke these helpers
     // concurrently; Cargo coordinates the target-directory lock and avoids
@@ -33,8 +34,12 @@ extra = []
 live = []
 
 [workspace]
+
+[patch.crates-io]
+wincode = {{ path = "{}" }}
 "#,
-            manifest_dir.display()
+            manifest_dir.display(),
+            wincode_dir.display(),
         ),
     )
     .unwrap();
@@ -686,54 +691,6 @@ pub struct Price {
             "`f32` and `f64` are not supported on `#[derive(IdlType)]`",
             "use an integer or fixed-point representation",
         ],
-    );
-}
-
-#[test]
-#[cfg_attr(
-    miri,
-    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
-)]
-fn nested_float_aliases_are_rejected_on_borsh_accounts() {
-    compile_pass_case(
-        "nested_safe_borsh_account",
-        r#"
-use anchor_lang::prelude::*;
-
-declare_id!("11111111111111111111111111111111");
-
-#[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct SafeInner {
-    pub value: u64,
-}
-
-#[account(borsh)]
-pub struct SafeAccount {
-    pub value: SafeInner,
-}
-"#,
-    );
-
-    compile_fail_case(
-        "nested_float_alias_borsh_account",
-        r#"
-use anchor_lang::prelude::*;
-
-declare_id!("11111111111111111111111111111111");
-
-type FloatAlias = f64;
-
-#[derive(AnchorSerialize, AnchorDeserialize)]
-pub struct HiddenFloat {
-    pub value: FloatAlias,
-}
-
-#[account(borsh)]
-pub struct Price {
-    pub value: HiddenFloat,
-}
-"#,
-        &["BorshSerializeCompatible", "BorshDeserializeCompatible"],
     );
 }
 
