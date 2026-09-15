@@ -108,6 +108,8 @@ fn test_borsh_realloc_shrink() {
     send_instruction(&mut svm, program_id(), grow_data, grow_metas, &payer, &[])
         .expect("grow should succeed");
 
+    let balance_after_grow = svm.get_account(&pda).unwrap().lamports;
+
     // 3. Shrink: realloc down and set items = [1, 2]
     let small_items: Vec<u8> = vec![1, 2];
     let shrink_data = borsh_realloc::instruction::Shrink {
@@ -131,6 +133,11 @@ fn test_borsh_realloc_shrink() {
 
     let items = read_items(&svm, &pda);
     assert_eq!(items, small_items, "data should be [1,2] after shrink");
+    assert_eq!(
+        svm.get_account(&pda).unwrap().lamports,
+        balance_after_grow,
+        "shrinking must preserve the target balance instead of refunding rent to the payer",
+    );
 }
 
 #[test]
