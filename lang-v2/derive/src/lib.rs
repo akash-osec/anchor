@@ -3197,9 +3197,18 @@ fn instruction_discriminator_validation_tokens(
             }
 
             let (message, span) = if mixed_mode {
+                let (missing_name, missing_span) = if first_custom {
+                    (second_name, *second_span)
+                } else {
+                    (first_name, *first_span)
+                };
                 (
-                    "if any instruction in `#[program]` uses `#[discrim = N]`, all must".into(),
-                    *second_span,
+                    format!(
+                        "instruction `{missing_name}` is missing `#[discrim = N]`; all instructions \
+                         in `#[program]` must specify custom discriminators when one instruction \
+                         does"
+                    ),
+                    missing_span,
                 )
             } else if first_custom
                 && second_custom
@@ -3243,7 +3252,7 @@ fn instruction_discriminator_validation_tokens(
                     #(#first_cfg_attrs)*
                     #(#second_cfg_attrs)*
                     const _: () = {
-                        compile_error!(#message);
+                        ::core::compile_error!(#message);
                     };
                 });
             } else {
