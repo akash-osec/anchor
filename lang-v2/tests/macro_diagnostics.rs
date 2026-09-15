@@ -712,6 +712,39 @@ pub struct Noop {}
     );
 
     compile_fail_case(
+        "float_instruction_attr_arg",
+        r#"
+use anchor_lang::prelude::*;
+
+#[derive(Accounts)]
+#[instruction(price: f64)]
+pub struct SetPrice {
+    pub data: UncheckedAccount,
+}
+"#,
+        &[
+            "`f32` and `f64` instruction arguments are not supported",
+            "use an integer or fixed-point representation",
+        ],
+    );
+
+    compile_fail_case(
+        "float_instruction_attr_alias",
+        r#"
+use anchor_lang::prelude::*;
+
+type Price = f64;
+
+#[derive(Accounts)]
+#[instruction(price: Price)]
+pub struct SetPrice {
+    pub data: UncheckedAccount,
+}
+"#,
+        &["BorshDeserializeCompatible"],
+    );
+
+    compile_fail_case(
         "float_borsh_account",
         r#"
 use anchor_lang::prelude::*;
