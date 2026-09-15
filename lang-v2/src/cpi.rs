@@ -578,7 +578,11 @@ fn create_prefunded(
     Ok(())
 }
 
-/// Realloc an account to a new size, adjusting rent as needed.
+/// Realloc an account to a new size, funding growth as needed.
+///
+/// `payer` funds a growth shortfall only. Shrinking never transfers lamports
+/// out of the account: a lower rent minimum does not prove that the payer
+/// supplied the balance being released.
 ///
 /// Requires Pinocchio's account-resize entrypoint hook so
 /// `original_data_len` tracking is available in `RuntimeAccount.padding`.
@@ -600,38 +604,6 @@ pub fn realloc_account(
         if deficit > 0 {
             require!(!payer_is_account, ProgramError::InvalidArgument);
             transfer_lamports_unchecked(payer, &*account as &AccountView, deficit)?;
-        }
-    } else if new_space < old_space {
-        let old_rent_minimum = rent_exempt_lamports(old_space)?;
-        // Shrinking should only reclaim rent that was reserved for bytes we are
-        // removing, not unrelated lamports the account might be holding.
-        let reclaimable_rent = old_rent_minimum.saturating_sub(new_rent_minimum);
-        // Cap the refund by the lamports actually available above the new rent
-        // floor so underfunded oversized accounts cannot underflow here.
-        let lamports_above_new_minimum =
-            current_lamports.saturating_sub(new_rent_minimum);
-        let refund = reclaimable_rent.min(lamports_above_new_minimum);
-        if refund > 0 {
-            // When the payer aliases the resized account, the refund is a
-            // no-op transfer. Skip the lamport writes so we do not overwrite
-            // the first write with the second and accidentally burn lamports.
-            if !payer_is_account {
-                let mut payer_mut = *payer;
-                // `checked_add` rather than `+`: overflow-checks is disabled in
-                // release builds, and this arithmetic is on user-supplied account
-                // lamports. The total SOL supply is bounded so overflow is
-                // unreachable in practice, but silent wrap would be a downgrade.
-                let new_payer_lamports = payer_mut
-                    .lamports()
-                    .checked_add(refund)
-                    .ok_or(ProgramError::ArithmeticOverflow)?;
-                payer_mut.set_lamports(new_payer_lamports);
-                account.set_lamports(
-                    current_lamports
-                        .checked_sub(refund)
-                        .ok_or(ProgramError::ArithmeticOverflow)?,
-                );
-            }
         }
     }
 
