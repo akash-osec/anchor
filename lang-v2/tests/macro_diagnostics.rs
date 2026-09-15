@@ -735,12 +735,13 @@ declare_id!("11111111111111111111111111111111");
 pub mod collision_program {
     use super::*;
 
-    #[discrim = 214]
-    pub fn decoy(_ctx: &mut Context<Noop>) -> Result<()> {
+    #[cfg(unix)]
+    pub fn protected(_ctx: &mut Context<Noop>) -> Result<()> {
         Ok(())
     }
 
-    pub fn protected(_ctx: &mut Context<Noop>) -> Result<()> {
+    #[discrim = 214]
+    pub fn decoy(_ctx: &mut Context<Noop>) -> Result<()> {
         Ok(())
     }
 
@@ -753,7 +754,7 @@ pub mod collision_program {
 #[derive(Accounts)]
 pub struct Noop {}
 "#,
-        &["if any instruction in `#[program]` uses `#[discrim = N]`, all must"],
+        &["instruction `protected` is missing `#[discrim = N]`"],
     );
 }
 
