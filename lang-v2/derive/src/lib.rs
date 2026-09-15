@@ -1126,6 +1126,24 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
         Ok(args) => args,
         Err(err) => return err.to_compile_error(),
     };
+    if let Some((_, ty)) = ix_args.iter().find(|(_, ty)| type_contains_float(ty)) {
+        return syn::Error::new(
+            ty.span(),
+            "`f32` and `f64` instruction arguments are not supported because the \
+             Borsh-compatible decoder would accept NaN; use an integer or fixed-point \
+             representation",
+        )
+        .to_compile_error();
+    }
+    let ix_arg_compatibility_asserts: Vec<_> = ix_args
+        .iter()
+        .map(|(_, ty)| {
+            borsh_compatibility_assert_for_type(
+                ty,
+                &quote!(anchor_lang::__private::BorshDeserializeCompatible),
+            )
+        })
+        .collect();
     let ix_arg_names: Vec<String> = ix_args.iter().map(|(n, _)| n.to_string()).collect();
 
     // Compute the views-slice offset for each field. Direct fields occupy 1
@@ -2134,6 +2152,8 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
         }
 
         #cpi_accounts_mod
+
+        #(#ix_arg_compatibility_asserts)*
 
         #bumps_def
 
