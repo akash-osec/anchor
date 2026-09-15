@@ -149,8 +149,8 @@ fn slab_realloc_clamps_tail_len_to_resized_capacity() {
 }
 
 #[test]
-fn slab_realloc_shrink_refunds_only_rent_delta_not_vault_balance() {
-    let mut buf = setup_ledger(/*capacity*/ 4, /*len*/ 1);
+fn slab_realloc_shrink_preserves_preexisting_surplus() {
+    let buf = setup_ledger(/*capacity*/ 4, /*len*/ 1);
     let payer = AccountBuffer::<128>::new();
     payer.init([0xCC; 32], PROGRAM_ID, 0, true, true, false);
     payer.set_lamports(25);
@@ -158,8 +158,6 @@ fn slab_realloc_shrink_refunds_only_rent_delta_not_vault_balance() {
     let old_space = ITEMS_OFFSET + 4 * ITEM_SIZE;
     let new_space = ITEMS_OFFSET + ITEM_SIZE;
     let old_required = expected_min_lamports(old_space).unwrap();
-    let new_required = expected_min_lamports(new_space).unwrap();
-    let rent_delta = old_required - new_required;
     let vault_balance = 1_000_000;
 
     buf.set_lamports(old_required + vault_balance);
@@ -172,19 +170,19 @@ fn slab_realloc_shrink_refunds_only_rent_delta_not_vault_balance() {
 
     assert_eq!(
         payer_view.lamports(),
-        25 + rent_delta,
-        "shrinking should only refund the rent savings for the removed bytes",
+        25,
+        "shrinking must not refund a payer that funded nothing",
     );
     assert_eq!(
         slab.view().lamports(),
-        new_required + vault_balance,
-        "vault lamports unrelated to rent must remain on the account after shrink",
+        old_required + vault_balance,
+        "pre-existing surplus must remain in the program-owned account",
     );
 }
 
 #[test]
-fn slab_realloc_shrink_refund_is_capped_by_available_lamports_above_new_floor() {
-    let mut buf = setup_ledger(/*capacity*/ 4, /*len*/ 1);
+fn slab_realloc_shrink_preserves_balance_above_new_floor() {
+    let buf = setup_ledger(/*capacity*/ 4, /*len*/ 1);
     let payer = AccountBuffer::<128>::new();
     payer.init([0xCC; 32], PROGRAM_ID, 0, true, true, false);
     payer.set_lamports(25);
@@ -205,14 +203,49 @@ fn slab_realloc_shrink_refund_is_capped_by_available_lamports_above_new_floor() 
 
     assert_eq!(
         payer_view.lamports(),
-        25 + 7,
-        "refund must be capped by the lamports actually available above the new rent floor",
+        25,
+        "shrinking must not credit the payer from the target balance",
     );
     assert_eq!(
         slab.view().lamports(),
-        new_required,
-        "the shrunken account must retain at least the new rent-exempt minimum",
+        new_required + 7,
+        "the shrunken account must retain its balance above the new rent floor",
     );
+}
+
+#[test]
+fn slab_realloc_grow_shrink_cycle_cannot_extract_preexisting_surplus() {
+    let buf = setup_ledger(/*capacity*/ 1, /*len*/ 1);
+    let payer = AccountBuffer::<128>::new();
+    payer.init([0xCC; 32], PROGRAM_ID, 0, true, true, false);
+    payer.set_lamports(25);
+
+    let small_space = ITEMS_OFFSET + ITEM_SIZE;
+    let large_space = ITEMS_OFFSET + 4 * ITEM_SIZE;
+    let initial_balance = expected_min_lamports(large_space).unwrap() + 1_000_000;
+    buf.set_lamports(initial_balance);
+
+    let view = unsafe { buf.view() };
+    let mut slab = unsafe { CounterLedger::load_mut(view) }.unwrap();
+    let payer_view = unsafe { payer.view() };
+
+    slab.realloc_account(large_space, payer_view, false)
+        .unwrap();
+    assert_eq!(
+        payer_view.lamports(),
+        25,
+        "overfunded growth must cost nothing"
+    );
+    assert_eq!(slab.view().lamports(), initial_balance);
+
+    slab.realloc_account(small_space, payer_view, false)
+        .unwrap();
+    assert_eq!(
+        payer_view.lamports(),
+        25,
+        "shrink must not pay an unrelated payer"
+    );
+    assert_eq!(slab.view().lamports(), initial_balance);
 }
 
 #[test]
