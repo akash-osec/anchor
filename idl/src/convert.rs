@@ -653,8 +653,8 @@ mod legacy {
     // ---------------------------------------------------------------------
 
     /// Build a legacy [`Idl`] from a current-spec [`t::Idl`]. The lossy
-    /// rules (dropped fields, defaulted seed types, hard errors) are
-    /// documented on the public [`super::convert_idl_to_legacy`] entry.
+    /// rules (dropped fields and hard errors) are documented on the public
+    /// [`super::convert_idl_to_legacy`] entry.
     pub(super) fn to_legacy(idl: &t::Idl) -> Result<Idl> {
         use std::collections::{HashMap, HashSet};
 
@@ -718,7 +718,7 @@ mod legacy {
                 .instructions
                 .iter()
                 .cloned()
-                .map(IdlInstruction::try_from)
+                .map(|ix| instruction_to_legacy(ix, &td_by_name))
                 .collect::<Result<_>>()?,
             accounts,
             types,
@@ -767,95 +767,354 @@ mod legacy {
         }
     }
 
-    impl TryFrom<t::IdlInstruction> for IdlInstruction {
-        type Error = anyhow::Error;
-
-        fn try_from(ix: t::IdlInstruction) -> Result<Self> {
-            Ok(Self {
-                // The legacy spec uses lowerCamelCase identifiers; the forward
-                // converter normalized them to snake_case, so we restore the
-                // original convention here.
-                name: ix.name.to_mixed_case(),
-                docs: (!ix.docs.is_empty()).then_some(ix.docs),
-                accounts: ix.accounts.into_iter().map(Into::into).collect(),
-                args: ix
-                    .args
-                    .into_iter()
-                    .map(IdlField::try_from)
-                    .collect::<Result<_>>()?,
-                returns: ix.returns.map(IdlType::try_from).transpose()?,
-            })
-        }
+    fn instruction_to_legacy(
+        ix: t::IdlInstruction,
+        td_by_name: &std::collections::HashMap<&str, &t::IdlTypeDef>,
+    ) -> Result<IdlInstruction> {
+        let name = ix.name.to_mixed_case();
+        let accounts = ix
+            .accounts
+            .iter()
+            .map(|item| account_item_to_legacy(item, &ix.args, &ix.accounts, td_by_name, &ix.name))
+            .collect::<Result<_>>()?;
+        Ok(IdlInstruction {
+            name,
+            docs: (!ix.docs.is_empty()).then_some(ix.docs),
+            accounts,
+            args: ix
+                .args
+                .into_iter()
+                .map(IdlField::try_from)
+                .collect::<Result<_>>()?,
+            returns: ix.returns.map(IdlType::try_from).transpose()?,
+        })
     }
 
-    impl From<t::IdlInstructionAccountItem> for IdlAccountItem {
-        fn from(item: t::IdlInstructionAccountItem) -> Self {
-            match item {
-                t::IdlInstructionAccountItem::Single(acc) => Self::IdlAccount(IdlAccount {
-                    // Legacy account names are lowerCamelCase.
-                    name: acc.name.to_mixed_case(),
-                    is_mut: acc.writable,
-                    is_signer: acc.signer,
-                    is_optional: acc.optional.then_some(true),
-                    docs: (!acc.docs.is_empty()).then_some(acc.docs),
-                    pda: acc.pda.map(Into::into),
-                    relations: acc
-                        .relations
-                        .into_iter()
-                        .map(|r| recase_path(&r, |s| s.to_mixed_case()))
-                        .collect(),
-                }),
-                t::IdlInstructionAccountItem::Composite(accs) => Self::IdlAccounts(IdlAccounts {
+    fn account_item_to_legacy(
+        item: &t::IdlInstructionAccountItem,
+        args: &[t::IdlField],
+        instruction_accounts: &[t::IdlInstructionAccountItem],
+        td_by_name: &std::collections::HashMap<&str, &t::IdlTypeDef>,
+        instruction_name: &str,
+    ) -> Result<IdlAccountItem> {
+        Ok(match item {
+            t::IdlInstructionAccountItem::Single(acc) => IdlAccountItem::IdlAccount(IdlAccount {
+                name: acc.name.to_mixed_case(),
+                is_mut: acc.writable,
+                is_signer: acc.signer,
+                is_optional: acc.optional.then_some(true),
+                docs: (!acc.docs.is_empty()).then_some(acc.docs.clone()),
+                pda: acc
+                    .pda
+                    .as_ref()
+                    .map(|pda| {
+                        pda_to_legacy(
+                            pda,
+                            args,
+                            instruction_accounts,
+                            td_by_name,
+                            instruction_name,
+                        )
+                    })
+                    .transpose()?,
+                relations: acc
+                    .relations
+                    .iter()
+                    .map(|r| recase_path(r, |s| s.to_mixed_case()))
+                    .collect(),
+            }),
+            t::IdlInstructionAccountItem::Composite(accs) => {
+                IdlAccountItem::IdlAccounts(IdlAccounts {
                     name: accs.name.to_mixed_case(),
-                    accounts: accs.accounts.into_iter().map(Into::into).collect(),
-                }),
+                    accounts: accs
+                        .accounts
+                        .iter()
+                        .map(|item| {
+                            account_item_to_legacy(
+                                item,
+                                args,
+                                instruction_accounts,
+                                td_by_name,
+                                instruction_name,
+                            )
+                        })
+                        .collect::<Result<_>>()?,
+                })
+            }
+        })
+    }
+
+    fn pda_to_legacy(
+        pda: &t::IdlPda,
+        args: &[t::IdlField],
+        instruction_accounts: &[t::IdlInstructionAccountItem],
+        td_by_name: &std::collections::HashMap<&str, &t::IdlTypeDef>,
+        instruction_name: &str,
+    ) -> Result<IdlPda> {
+        Ok(IdlPda {
+            seeds: pda
+                .seeds
+                .iter()
+                .map(|seed| {
+                    seed_to_legacy(
+                        seed,
+                        args,
+                        instruction_accounts,
+                        td_by_name,
+                        instruction_name,
+                    )
+                })
+                .collect::<Result<_>>()?,
+            program_id: pda
+                .program
+                .as_ref()
+                .map(|seed| {
+                    seed_to_legacy(
+                        seed,
+                        args,
+                        instruction_accounts,
+                        td_by_name,
+                        instruction_name,
+                    )
+                })
+                .transpose()?,
+        })
+    }
+
+    fn seed_to_legacy(
+        seed: &t::IdlSeed,
+        args: &[t::IdlField],
+        instruction_accounts: &[t::IdlInstructionAccountItem],
+        td_by_name: &std::collections::HashMap<&str, &t::IdlTypeDef>,
+        instruction_name: &str,
+    ) -> Result<IdlSeed> {
+        match seed {
+            t::IdlSeed::Const(c) => Ok(IdlSeed::Const(IdlSeedConst {
+                // The current spec stores const seeds as raw bytes; legacy
+                // requires a typed value. Bytes round-trips without loss.
+                ty: IdlType::Bytes,
+                value: serde_json::Value::Array(
+                    c.value
+                        .iter()
+                        .map(|b| serde_json::Value::Number((*b).into()))
+                        .collect(),
+                ),
+            })),
+            t::IdlSeed::Arg(a) => {
+                let ty = resolve_arg_seed_type(&a.path, args, td_by_name).map_err(|err| {
+                    anyhow!(
+                        "instruction `{instruction_name}` argument seed `{}`: {err}",
+                        a.path
+                    )
+                })?;
+                Ok(IdlSeed::Arg(IdlSeedArg {
+                    ty: ty.try_into().map_err(|err| {
+                        anyhow!(
+                            "instruction `{instruction_name}` argument seed `{}` has an unsupported type: {err}",
+                            a.path
+                        )
+                    })?,
+                    path: recase_path(&a.path, |s| s.to_mixed_case()),
+                }))
+            }
+            t::IdlSeed::Account(a) => {
+                let (account_prefix, remainder) =
+                    resolve_account_seed_path(&a.path, instruction_accounts).map_err(|err| {
+                        anyhow!(
+                            "instruction `{instruction_name}` account seed `{}`: {err}",
+                            a.path
+                        )
+                    })?;
+                let ty = if remainder.is_empty() {
+                    t::IdlType::Pubkey
+                } else {
+                    let account_name = a.account.as_deref().ok_or_else(|| {
+                        anyhow!(
+                            "field path `{}` selects `{account_prefix}` but has no account type",
+                            a.path
+                        )
+                    })?;
+                    resolve_nested_type(
+                        t::IdlType::Defined {
+                            name: account_name.to_owned(),
+                            generics: vec![],
+                        },
+                        &remainder,
+                        td_by_name,
+                    )
+                    .map_err(|err| {
+                        anyhow!(
+                            "instruction `{instruction_name}` account seed `{}`: {err}",
+                            a.path
+                        )
+                    })?
+                };
+                Ok(IdlSeed::Account(IdlSeedAccount {
+                    ty: ty.try_into().map_err(|err| {
+                        anyhow!(
+                            "instruction `{instruction_name}` account seed `{}` has an unsupported type: {err}",
+                            a.path
+                        )
+                    })?,
+                    account: a.account.clone(),
+                    path: recase_path(&a.path, |s| s.to_mixed_case()),
+                }))
             }
         }
     }
 
-    impl From<t::IdlPda> for IdlPda {
-        fn from(p: t::IdlPda) -> Self {
-            Self {
-                seeds: p.seeds.into_iter().map(Into::into).collect(),
-                program_id: p.program.map(Into::into),
+    fn resolve_arg_seed_type(
+        path: &str,
+        args: &[t::IdlField],
+        td_by_name: &std::collections::HashMap<&str, &t::IdlTypeDef>,
+    ) -> Result<t::IdlType> {
+        let segments = split_path(path)?;
+        let (root, rest) = segments
+            .split_first()
+            .ok_or_else(|| anyhow!("seed path is empty"))?;
+        let arg = args
+            .iter()
+            .find(|arg| arg.name == *root)
+            .ok_or_else(|| anyhow!("argument `{root}` was not found"))?;
+        resolve_nested_type(arg.ty.clone(), rest, td_by_name)
+    }
+
+    fn resolve_account_seed_path<'a>(
+        path: &'a str,
+        instruction_accounts: &[t::IdlInstructionAccountItem],
+    ) -> Result<(String, Vec<&'a str>)> {
+        let segments = split_path(path)?;
+        let mut prefixes = Vec::new();
+        collect_account_paths(instruction_accounts, &mut Vec::new(), &mut prefixes);
+        let matches: Vec<String> = prefixes
+            .into_iter()
+            .filter(|prefix| {
+                (segments.len() >= prefix.split('.').count() && path == prefix)
+                    || path
+                        .strip_prefix(prefix)
+                        .is_some_and(|rest| rest.starts_with('.'))
+            })
+            .collect();
+        let longest = matches
+            .iter()
+            .map(|prefix| prefix.split('.').count())
+            .max()
+            .ok_or_else(|| anyhow!("account path does not match an instruction account"))?;
+        let matches: Vec<String> = matches
+            .into_iter()
+            .filter(|prefix| prefix.split('.').count() == longest)
+            .collect();
+        if matches.len() != 1 {
+            return Err(anyhow!("account path is ambiguous"));
+        }
+        let prefix = matches.into_iter().next().unwrap();
+        let remainder = path
+            .strip_prefix(&prefix)
+            .unwrap()
+            .strip_prefix('.')
+            .unwrap_or("");
+        let remainder = if remainder.is_empty() {
+            Vec::new()
+        } else {
+            split_path(remainder)?
+        };
+        Ok((prefix, remainder))
+    }
+
+    fn collect_account_paths(
+        items: &[t::IdlInstructionAccountItem],
+        parent: &mut Vec<String>,
+        output: &mut Vec<String>,
+    ) {
+        for item in items {
+            match item {
+                t::IdlInstructionAccountItem::Single(account) => {
+                    let mut path = parent.clone();
+                    path.push(account.name.clone());
+                    output.push(path.join("."));
+                }
+                t::IdlInstructionAccountItem::Composite(accounts) => {
+                    parent.push(accounts.name.clone());
+                    collect_account_paths(&accounts.accounts, parent, output);
+                    parent.pop();
+                }
             }
         }
     }
 
-    impl From<t::IdlSeed> for IdlSeed {
-        fn from(s: t::IdlSeed) -> Self {
-            match s {
-                t::IdlSeed::Const(c) => Self::Const(IdlSeedConst {
-                    // The current spec stores const seeds as raw bytes;
-                    // legacy requires a typed value. Bytes is the safe
-                    // default that round-trips without information loss.
-                    ty: IdlType::Bytes,
-                    value: serde_json::Value::Array(
-                        c.value
-                            .into_iter()
-                            .map(|b| serde_json::Value::Number(b.into()))
-                            .collect(),
-                    ),
-                }),
-                t::IdlSeed::Arg(a) => Self::Arg(IdlSeedArg {
-                    // The current spec dropped the seed argument's declared
-                    // type. `Bytes` is a placeholder; downstream code that
-                    // requires accurate seed types must read the original
-                    // legacy IDL.
-                    ty: IdlType::Bytes,
-                    path: recase_path(&a.path, |s| s.to_mixed_case()),
-                }),
-                t::IdlSeed::Account(a) => Self::Account(IdlSeedAccount {
-                    // Account-derived seeds are always pubkeys.
-                    ty: IdlType::PublicKey,
-                    // `account` is a type name (PascalCase) — leave it.
-                    account: a.account,
-                    // `path` references an account in the same instruction
-                    // and must follow legacy lowerCamelCase naming.
-                    path: recase_path(&a.path, |s| s.to_mixed_case()),
-                }),
-            }
+    fn split_path(path: &str) -> Result<Vec<&str>> {
+        if path.is_empty() {
+            return Err(anyhow!("seed path is empty"));
         }
+        let segments: Vec<&str> = path.split('.').collect();
+        if segments.iter().any(|segment| segment.is_empty()) {
+            return Err(anyhow!("seed path contains an empty segment"));
+        }
+        Ok(segments)
+    }
+
+    fn resolve_nested_type(
+        mut ty: t::IdlType,
+        path: &[&str],
+        td_by_name: &std::collections::HashMap<&str, &t::IdlTypeDef>,
+    ) -> Result<t::IdlType> {
+        for field_name in path {
+            let mut aliases = 0;
+            let field = loop {
+                match ty {
+                    t::IdlType::Defined {
+                        ref name,
+                        ref generics,
+                    } if generics.is_empty() => {
+                        let td = td_by_name
+                            .get(name.as_str())
+                            .ok_or_else(|| anyhow!("type definition `{name}` was not found"))?;
+                        match &td.ty {
+                            t::IdlTypeDefTy::Type { alias } => {
+                                aliases += 1;
+                                if aliases > td_by_name.len().max(1) {
+                                    return Err(anyhow!("cyclic type alias involving `{name}`"));
+                                }
+                                ty = alias.clone();
+                            }
+                            t::IdlTypeDefTy::Struct { fields } => {
+                                let Some(t::IdlDefinedFields::Named(fields)) = fields else {
+                                    return Err(anyhow!(
+                                        "type `{name}` cannot be traversed as named fields"
+                                    ));
+                                };
+                                break fields
+                                    .iter()
+                                    .find(|field| field.name == *field_name)
+                                    .map(|field| field.ty.clone())
+                                    .ok_or_else(|| {
+                                        anyhow!(
+                                            "field `{field_name}` was not found in type `{name}`"
+                                        )
+                                    })?;
+                            }
+                            _ => {
+                                return Err(anyhow!(
+                                    "type `{name}` cannot be traversed as named fields"
+                                ))
+                            }
+                        }
+                    }
+                    t::IdlType::Defined { name, .. } => {
+                        return Err(anyhow!(
+                            "generic type `{name}` cannot be traversed without specialization"
+                        ))
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "field `{field_name}` cannot be selected from a non-struct type"
+                        ))
+                    }
+                }
+            };
+            ty = field;
+        }
+        Ok(ty)
     }
 
     impl TryFrom<t::IdlField> for IdlField {
