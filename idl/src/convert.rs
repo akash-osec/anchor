@@ -983,13 +983,12 @@ mod legacy {
         path: &'a str,
         instruction_accounts: &[t::IdlInstructionAccountItem],
     ) -> Result<(String, Vec<&'a str>)> {
-        let segments = split_path(path)?;
         let mut prefixes = Vec::new();
         collect_account_paths(instruction_accounts, &mut Vec::new(), &mut prefixes);
         let matches: Vec<String> = prefixes
             .into_iter()
             .filter(|prefix| {
-                (segments.len() >= prefix.split('.').count() && path == prefix)
+                path == prefix
                     || path
                         .strip_prefix(prefix)
                         .is_some_and(|rest| rest.starts_with('.'))
