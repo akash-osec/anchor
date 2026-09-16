@@ -12,10 +12,12 @@ use {
             program,
         },
         testing::{AccountBuffer, MIN_ACCOUNT_BUF},
-        Address, AnchorAccount, AnchorDeserialize, AnchorSerialize, CpiContext, CpiHandle,
-        CpiHandleMut, Discriminator, Owner, ToCpiAccounts, ToCpiHandle, ToCpiHandleMut,
+        unchecked_invoke_signed_fixed, Address, AnchorAccount, AnchorDeserialize, AnchorSerialize,
+        CpiContext, CpiHandle, CpiHandleMut, Discriminator, Owner, ToCpiAccounts, ToCpiHandle,
+        ToCpiHandleMut,
     },
     bytemuck::{Pod, Zeroable},
+    pinocchio::instruction::InstructionAccount,
     solana_program_error::ProgramError,
 };
 
@@ -323,6 +325,51 @@ fn checked_invoke_rejects_readonly_handle_for_writable_meta() {
     let err = program::invoke(&ix, &handles).unwrap_err();
 
     assert_eq!(err, ProgramError::InvalidArgument);
+}
+
+#[test]
+fn fixed_invoke_rejects_readonly_handle_for_writable_meta() {
+    let buffer = account_view([1; 32], true);
+    let view = unsafe { buffer.view() };
+    let handle = CpiHandle::readonly(&view);
+    let metas = [InstructionAccount::new(handle.address(), true, false)];
+
+    let err = unchecked_invoke_signed_fixed(&ID, &[], &metas, &[handle], &[]).unwrap_err();
+
+    assert_eq!(err, ProgramError::InvalidArgument);
+}
+
+#[test]
+fn fixed_invoke_rejects_address_mismatch() {
+    let buffer = account_view([1; 32], false);
+    let view = unsafe { buffer.view() };
+    let handle = CpiHandle::readonly(&view);
+    let other = Address::new_from_array([2; 32]);
+    let metas = [InstructionAccount::new(&other, false, false)];
+
+    let err = unchecked_invoke_signed_fixed(&ID, &[], &metas, &[handle], &[]).unwrap_err();
+
+    assert_eq!(err, ProgramError::InvalidArgument);
+}
+
+#[test]
+fn fixed_invoke_accepts_matching_readonly_handle() {
+    let buffer = account_view([1; 32], false);
+    let view = unsafe { buffer.view() };
+    let handle = CpiHandle::readonly(&view);
+    let metas = [InstructionAccount::new(handle.address(), false, false)];
+
+    unchecked_invoke_signed_fixed(&ID, &[], &metas, &[handle], &[]).unwrap();
+}
+
+#[test]
+fn fixed_invoke_accepts_matching_writable_handle() {
+    let buffer = account_view([1; 32], true);
+    let mut view = unsafe { buffer.view() };
+    let handle = CpiHandleMut::writable(&mut view);
+    let metas = [InstructionAccount::new(handle.address(), true, false)];
+
+    unchecked_invoke_signed_fixed(&ID, &[], &metas, &[handle.into()], &[]).unwrap();
 }
 
 #[test]
