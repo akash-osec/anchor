@@ -127,7 +127,50 @@ impl<'a> TypeLowerer<'a> {
             "Box" => first_type_arg(segment)
                 .map(|inner| self.lower(inner))
                 .unwrap_or_else(|| json!({ "defined": { "name": "Box" } })),
-            _ => json!({ "defined": { "name": segment.ident.to_string() } }),
+            _ => self.lower_defined_path(segment),
+        }
+    }
+
+    fn lower_defined_path(&mut self, segment: &syn::PathSegment) -> Value {
+        let mut generics = Vec::new();
+        match &segment.arguments {
+            PathArguments::None => {}
+            PathArguments::AngleBracketed(arguments) => {
+                for argument in &arguments.args {
+                    match argument {
+                        syn::GenericArgument::Type(ty) => generics.push(json!({
+                            "kind": "type",
+                            "type": self.lower(ty),
+                        })),
+                        syn::GenericArgument::Const(expr) => generics.push(json!({
+                            "kind": "const",
+                            "value": quote!(#expr).to_string().replace(' ', ""),
+                        })),
+                        unsupported => panic!(
+                            "unsupported generic argument in IDL type `{}`: {}",
+                            segment.ident,
+                            quote!(#unsupported)
+                        ),
+                    }
+                }
+            }
+            PathArguments::Parenthesized(_) => {
+                panic!(
+                    "unsupported parenthesized generic arguments in IDL type `{}`",
+                    segment.ident
+                )
+            }
+        }
+
+        if generics.is_empty() {
+            json!({ "defined": { "name": segment.ident.to_string() } })
+        } else {
+            json!({
+                "defined": {
+                    "name": segment.ident.to_string(),
+                    "generics": generics,
+                }
+            })
         }
     }
 
