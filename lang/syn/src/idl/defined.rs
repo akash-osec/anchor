@@ -943,7 +943,7 @@ mod tests {
         };
 
         let err = gen_idl_type_def_enum(&item).unwrap_err();
-        assert!(err.to_string().contains("use_discriminant = true"));
+        assert!(err.to_string().contains("custom discriminators"));
     }
 
     #[test]
