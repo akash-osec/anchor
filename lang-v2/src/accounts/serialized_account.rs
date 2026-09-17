@@ -294,6 +294,11 @@ where
     }
 
     #[inline(always)]
+    fn cpi_handle(&self) -> crate::CpiHandle<'_> {
+        crate::CpiHandle::readonly_with_flags(self.account(), !self.is_mutable, self.is_mutable)
+    }
+
+    #[inline(always)]
     fn try_cpi_handle_mut(&mut self) -> Result<crate::CpiHandleMut<'_>, ProgramError> {
         require!(self.account().is_writable(), ProgramError::InvalidArgument);
         self.release_borrow()?;
