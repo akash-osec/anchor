@@ -112,6 +112,10 @@ fn borsh_account_view(address: [u8; 32], writable: bool, value: u64) -> AccountB
     buffer
 }
 
+fn generic_cpi_handle<T: ToCpiHandle>(account: &T) -> CpiHandle<'_> {
+    account.to_cpi_handle()
+}
+
 fn instruction(account: Address, writable: bool) -> Instruction {
     let meta = if writable {
         AccountMeta::new(account, false)
@@ -340,6 +344,47 @@ fn fixed_invoke_rejects_readonly_handle_for_writable_meta() {
 }
 
 #[test]
+fn mutable_borsh_account_readonly_cpi_handle_is_validated() {
+    let buffer = borsh_account_view([1; 32], true, 9);
+    let view = unsafe { buffer.view() };
+    let mut account = unsafe { BorshAccount::<BorshCounter>::load_mut(view) }.unwrap();
+    account.value = 17;
+    let ix = instruction(*account.address(), false);
+    let handles = [account.cpi_handle()];
+
+    program::invoke(&ix, &handles).unwrap();
+
+    assert_eq!(account.value, 17);
+}
+
+#[test]
+fn mutable_borsh_account_generic_readonly_cpi_handle_is_validated() {
+    let buffer = borsh_account_view([1; 32], true, 9);
+    let view = unsafe { buffer.view() };
+    let mut account = unsafe { BorshAccount::<BorshCounter>::load_mut(view) }.unwrap();
+    account.value = 23;
+    let ix = instruction(*account.address(), false);
+    let handles = [generic_cpi_handle(&account)];
+
+    program::invoke(&ix, &handles).unwrap();
+
+    assert_eq!(account.value, 23);
+}
+
+#[test]
+fn mutable_borsh_account_readonly_cpi_handle_stays_readonly() {
+    let buffer = borsh_account_view([1; 32], true, 9);
+    let view = unsafe { buffer.view() };
+    let account = unsafe { BorshAccount::<BorshCounter>::load_mut(view) }.unwrap();
+    let ix = instruction(*account.address(), true);
+    let handles = [account.cpi_handle()];
+
+    let err = program::invoke(&ix, &handles).unwrap_err();
+
+    assert_eq!(err, ProgramError::InvalidArgument);
+}
+
+#[test]
 fn fixed_invoke_rejects_address_mismatch() {
     let buffer = account_view([1; 32], false);
     let view = unsafe { buffer.view() };
@@ -370,6 +415,17 @@ fn fixed_invoke_accepts_matching_writable_handle() {
     let metas = [InstructionAccount::new(handle.address(), true, false)];
 
     unchecked_invoke_signed_fixed(&ID, &[], &metas, &[handle.into()], &[]).unwrap();
+}
+
+#[test]
+fn immutable_borsh_account_readonly_cpi_handle_remains_checked() {
+    let buffer = borsh_account_view([1; 32], false, 9);
+    let view = unsafe { buffer.view() };
+    let account = BorshAccount::<BorshCounter>::load(view).unwrap();
+    let ix = instruction(*account.address(), false);
+    let handles = [account.cpi_handle()];
+
+    program::invoke(&ix, &handles).unwrap();
 }
 
 #[test]
