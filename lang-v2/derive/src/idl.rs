@@ -1544,6 +1544,69 @@ mod tests {
     }
 
     #[test]
+    fn defined_references_preserve_type_and_const_generics() {
+        let wrapper_u64: Type = syn::parse_quote!(Wrapper<u64>);
+        assert_eq!(
+            rust_type_to_idl_value(&wrapper_u64),
+            json!({
+                "defined": {
+                    "name": "Wrapper",
+                    "generics": [{ "kind": "type", "type": "u64" }],
+                }
+            })
+        );
+
+        let wrapper_address: Type = syn::parse_quote!(Wrapper<Address>);
+        assert_eq!(
+            rust_type_to_idl_value(&wrapper_address),
+            json!({
+                "defined": {
+                    "name": "Wrapper",
+                    "generics": [{ "kind": "type", "type": "pubkey" }],
+                }
+            })
+        );
+
+        let buf_64: Type = syn::parse_quote!(Buf<64>);
+        let buf_128: Type = syn::parse_quote!(Buf<128>);
+        assert_eq!(
+            rust_type_to_idl_value(&buf_64),
+            json!({
+                "defined": {
+                    "name": "Buf",
+                    "generics": [{ "kind": "const", "value": "64" }],
+                }
+            })
+        );
+        assert_eq!(
+            rust_type_to_idl_value(&buf_128),
+            json!({
+                "defined": {
+                    "name": "Buf",
+                    "generics": [{ "kind": "const", "value": "128" }],
+                }
+            })
+        );
+
+        let nested: Type = syn::parse_quote!(Wrapper<Vec<u64>>);
+        assert_eq!(
+            rust_type_to_idl_value(&nested),
+            json!({
+                "defined": {
+                    "name": "Wrapper",
+                    "generics": [{ "kind": "type", "type": { "vec": "u64" } }],
+                }
+            })
+        );
+
+        let plain: Type = syn::parse_quote!(Wrapper);
+        assert_eq!(
+            rust_type_to_idl_value(&plain),
+            json!({ "defined": { "name": "Wrapper" } })
+        );
+    }
+
+    #[test]
     fn array_lengths_are_lowered_in_their_defining_context() {
         let generics: Generics = syn::parse_quote!(<const N: usize>);
         let mut lowerer = TypeLowerer::with_generics(&generics);
