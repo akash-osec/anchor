@@ -40,6 +40,24 @@ pub fn convert_idl_to_legacy(_idl: &Idl) -> Result<Vec<u8>> {
     Err(anyhow!("conversion to legacy IDLs is no longer supported"))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Current-spec IDLs must not be emitted in the unsupported legacy format.
+    #[test]
+    fn current_to_legacy_conversion_is_not_supported() {
+        let original = include_bytes!("../../tests/declare-program/idls/external_legacy.json");
+        let current = convert_idl(original).expect("Converting legacy -> current failed");
+        let error = convert_idl_to_legacy(&current)
+            .expect_err("current -> legacy conversion should be unsupported");
+        assert_eq!(
+            error.to_string(),
+            "conversion to legacy IDLs is no longer supported"
+        );
+    }
+}
+
 /// Legacy IDL spec (pre Anchor v0.30) and legacy-to-current conversions.
 mod legacy {
     use {
