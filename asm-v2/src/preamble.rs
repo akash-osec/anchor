@@ -11,7 +11,7 @@
 //! fixed-size arrays of them — no generics, no references.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 use syn::{Meta, Token, punctuated::Punctuated};
@@ -28,13 +28,27 @@ pub fn generate(lib_rs: &Path) -> String {
 pub(crate) fn generate_tracked(lib_rs: &Path) -> (String, Vec<PathBuf>) {
     let root_dir = lib_rs.parent().unwrap_or_else(|| Path::new("."));
     let mut visited = HashSet::new();
-    let output = generate_file(lib_rs, root_dir, &mut visited);
+    let mut symbols = HashMap::new();
+    let mut module_path = Vec::new();
+    let output = generate_file(
+        lib_rs,
+        root_dir,
+        &mut visited,
+        &mut symbols,
+        &mut module_path,
+    );
     let mut visited_files: Vec<_> = visited.into_iter().collect();
     visited_files.sort();
     (output, visited_files)
 }
 
-fn generate_file(path: &Path, module_dir: &Path, visited: &mut HashSet<PathBuf>) -> String {
+fn generate_file(
+    path: &Path,
+    module_dir: &Path,
+    visited: &mut HashSet<PathBuf>,
+    symbols: &mut HashMap<String, String>,
+    module_path: &mut Vec<String>,
+) -> String {
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     if !visited.insert(canonical) {
         return String::new();
@@ -52,7 +66,15 @@ fn generate_file(path: &Path, module_dir: &Path, visited: &mut HashSet<PathBuf>)
 
     let mut out = String::new();
     let source_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    visit_items(&file.items, source_dir, module_dir, visited, &mut out);
+    visit_items(
+        &file.items,
+        source_dir,
+        module_dir,
+        visited,
+        symbols,
+        module_path,
+        &mut out,
+    );
     out
 }
 
@@ -61,17 +83,19 @@ fn visit_items(
     source_dir: &Path,
     module_dir: &Path,
     visited: &mut HashSet<PathBuf>,
+    symbols: &mut HashMap<String, String>,
+    module_path: &mut Vec<String>,
     out: &mut String,
 ) {
     for item in items {
         match item {
             syn::Item::Struct(s) if cfg_enabled(&s.attrs) && has_account_attr(s) => {
-                if let Some(block) = emit_struct(s) {
+                if let Some(block) = emit_struct(s, symbols, module_path) {
                     out.push_str(&block);
                 }
             }
             syn::Item::Mod(m) if cfg_enabled(&m.attrs) => {
-                visit_module(m, source_dir, module_dir, visited, out)
+                visit_module(m, source_dir, module_dir, visited, symbols, module_path, out)
             }
             _ => {}
         }
@@ -83,14 +107,32 @@ fn visit_module(
     source_dir: &Path,
     module_dir: &Path,
     visited: &mut HashSet<PathBuf>,
+    symbols: &mut HashMap<String, String>,
+    module_path: &mut Vec<String>,
     out: &mut String,
 ) {
+    module_path.push(module.ident.to_string());
     if let Some((_, items)) = &module.content {
         let child_dir = inline_module_dir(source_dir, module_dir, module);
-        visit_items(items, &child_dir, &child_dir, visited, out);
+        visit_items(
+            items,
+            &child_dir,
+            &child_dir,
+            visited,
+            symbols,
+            module_path,
+            out,
+        );
     } else if let Some((path, child_dir)) = resolve_module_file(source_dir, module_dir, module) {
-        out.push_str(&generate_file(&path, &child_dir, visited));
+        out.push_str(&generate_file(
+            &path,
+            &child_dir,
+            visited,
+            symbols,
+            module_path,
+        ));
     }
+    module_path.pop();
 }
 
 fn inline_module_dir(source_dir: &Path, module_dir: &Path, module: &syn::ItemMod) -> PathBuf {
@@ -284,24 +326,22 @@ fn cfg_env_name(value: &str) -> String {
 }
 
 /// Emit `.equ` constants for a single struct.
-fn emit_struct(s: &syn::ItemStruct) -> Option<String> {
+fn emit_struct(
+    s: &syn::ItemStruct,
+    symbols: &mut HashMap<String, String>,
+    module_path: &[String],
+) -> Option<String> {
     let name = &s.ident;
     let fields = match &s.fields {
         syn::Fields::Named(f) => &f.named,
         _ => return None,
     };
 
-    let mut out = String::new();
-    out.push_str(&format!("# {name} field offsets and sizes.\n"));
-    out.push_str(&format!(
-        "# {}\n",
-        "-".repeat(70)
-    ));
-
     // Compute repr(C) layout: fields in declaration order, each aligned
     // to its natural alignment, struct padded to max alignment at end.
     let mut offset: usize = 0;
     let mut max_align: usize = 1;
+    let mut declarations = Vec::new();
 
     for field in fields {
         if !cfg_enabled(&field.attrs) {
@@ -325,7 +365,11 @@ fn emit_struct(s: &syn::ItemStruct) -> Option<String> {
         let (size, align) = type_layout(&field.ty)?;
         offset = align_up(offset, align);
 
-        out.push_str(&format!(".equ {name}__{field_name}, {offset}\n"));
+        declarations.push((
+            format!("{name}__{field_name}"),
+            offset,
+            symbol_origin(module_path, name, &name_str, false),
+        ));
 
         offset += size;
         if align > max_align {
@@ -335,19 +379,70 @@ fn emit_struct(s: &syn::ItemStruct) -> Option<String> {
 
     // Pad to struct alignment.
     let struct_size = align_up(offset, max_align);
+    declarations.extend([
+        (
+            format!("{name}__SIZE"),
+            struct_size,
+            symbol_origin(module_path, name, "SIZE", true),
+        ),
+        (
+            format!("{name}__DISC_SIZE"),
+            8,
+            symbol_origin(module_path, name, "DISC_SIZE", true),
+        ),
+        (
+            format!("{name}__INIT_SPACE"),
+            8 + struct_size,
+            symbol_origin(module_path, name, "INIT_SPACE", true),
+        ),
+    ]);
 
-    out.push_str(&format!(".equ {name}__SIZE, {struct_size}\n"));
-    out.push_str(&format!(".equ {name}__DISC_SIZE, 8\n"));
-    out.push_str(&format!(
-        ".equ {name}__INIT_SPACE, {}\n",
-        8 + struct_size
-    ));
-    out.push_str(&format!(
-        "# {}\n\n",
-        "-".repeat(70)
-    ));
+    let mut local_symbols = HashMap::new();
+    for (symbol, _, origin) in &declarations {
+        if let Some(previous) = local_symbols.insert(symbol.clone(), origin.clone()) {
+            panic!(
+                "anchor-asm: duplicate generated assembly symbol {symbol}; emitted by {previous} and {origin}"
+            );
+        }
+        if let Some(previous) = symbols.get(symbol) {
+            panic!(
+                "anchor-asm: duplicate generated assembly symbol {symbol}; emitted by {previous} and {origin}"
+            );
+        }
+    }
+    symbols.extend(local_symbols);
+
+    let mut out = String::new();
+    out.push_str(&format!("# {name} field offsets and sizes.\n"));
+    out.push_str(&format!("# {}\n", "-".repeat(70)));
+
+    for (symbol, value, _) in declarations {
+        out.push_str(&format!(".equ {symbol}, {value}\n"));
+    }
+    out.push_str(&format!("# {}\n\n", "-".repeat(70)));
 
     Some(out)
+}
+
+fn symbol_origin(
+    module_path: &[String],
+    type_name: &syn::Ident,
+    member_name: &str,
+    metadata: bool,
+) -> String {
+    let mut path = String::from("crate");
+    for module in module_path {
+        path.push_str("::");
+        path.push_str(module);
+    }
+    path.push_str("::");
+    path.push_str(&type_name.to_string());
+    path.push_str("::");
+    path.push_str(member_name);
+    if metadata {
+        path.push_str(" (metadata)");
+    }
+    path
 }
 
 /// Returns (size, alignment) for a type, matching `#[repr(C)]` / Pod layout.
@@ -974,4 +1069,5 @@ mod tests {
         assert!(result.contains(".equ SignedWide__SIZE, 32"));
         std::fs::remove_file(tmp).ok();
     }
+
 }
