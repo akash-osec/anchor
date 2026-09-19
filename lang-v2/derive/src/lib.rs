@@ -7521,14 +7521,23 @@ mod tests {
     #[test]
     fn declare_program_array_lengths_accept_declared_generics_only() {
         let span = proc_macro2::Span::call_site();
+        let generics = std::collections::BTreeSet::from(["N".to_owned()]);
 
-        let generic_tokens =
-            declare_idl_array_len_to_tokens(&json!({ "generic": "N" }), span).unwrap();
+        let generic_tokens = declare_idl_array_len_to_tokens(
+            &json!({ "generic": "N" }),
+            span,
+            &generics,
+        )
+        .unwrap();
         assert_eq!(generic_tokens.to_string(), "N");
 
-        let err = declare_idl_array_len_to_tokens(&json!({ "generic": "limits::ITEMS" }), span)
-            .unwrap_err();
-        assert!(err.to_string().contains("invalid IDL array generic"));
+        let err = declare_idl_array_len_to_tokens(
+            &json!({ "generic": "limits::ITEMS" }),
+            span,
+            &generics,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("undeclared IDL const generic"));
     }
 
     #[test]
@@ -7758,12 +7767,20 @@ mod tests {
     #[test]
     fn declare_idl_defined_pod_wrappers_use_runtime_types() {
         let span = proc_macro2::Span::call_site();
-        let pod_u64 =
-            declare_idl_type_to_tokens(&json!({ "defined": { "name": "PodU64" } }), span).unwrap();
+        let pod_u64 = declare_idl_type_to_tokens(
+            &json!({ "defined": { "name": "PodU64" } }),
+            span,
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap();
         assert_eq!(pod_u64.to_string(), "anchor_lang :: pod :: PodU64");
 
-        let pod_bool =
-            declare_idl_type_to_tokens(&json!({ "defined": { "name": "PodBool" } }), span).unwrap();
+        let pod_bool = declare_idl_type_to_tokens(
+            &json!({ "defined": { "name": "PodBool" } }),
+            span,
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap();
         assert_eq!(pod_bool.to_string(), "anchor_lang :: pod :: PodBool");
     }
 
