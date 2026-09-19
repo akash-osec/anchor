@@ -180,6 +180,73 @@ fn declare_program_compile_fail_case(name: &str, idl: &str, snippets: &[&str]) {
 }
 
 #[test]
+fn declare_program_rejects_executable_constant_values() {
+    for (name, value) in [
+        ("declare_program_include_str_constant", "include_str!(\"missing\")"),
+        ("declare_program_env_constant", "env!(\"MISSING_ENV\")"),
+        ("declare_program_call_constant", "constant_value()"),
+        ("declare_program_block_constant", "{ 1 }"),
+        ("declare_program_unsafe_constant", "unsafe { 1 }"),
+    ] {
+        let value = serde_json::to_string(value).unwrap();
+        let idl = format!(
+            r#"{{
+  "address": "11111111111111111111111111111111",
+  "metadata": {{ "name": "poison", "version": "0.1.0", "spec": "0.1.0" }},
+  "instructions": [],
+  "constants": [{{ "name": "VALUE", "type": "u64", "value": {value} }}]
+}}"#
+        );
+        declare_program_compile_fail_case(
+            name,
+            &idl,
+            &["expected an IDL u64 integer literal; executable Rust expressions are not allowed"],
+        );
+    }
+}
+
+#[test]
+fn declare_program_rejects_executable_const_generic_values() {
+    let idl = r#"
+{
+  "address": "11111111111111111111111111111111",
+  "metadata": { "name": "poison", "version": "0.1.0", "spec": "0.1.0" },
+  "instructions": [],
+  "types": [
+    {
+      "name": "Fixed",
+      "generics": [{ "kind": "const", "name": "N", "type": "usize" }],
+      "type": {
+        "kind": "struct",
+        "fields": [{ "name": "data", "type": { "array": ["u8", { "generic": "N" }] } }]
+      }
+    },
+    {
+      "name": "UsesPoison",
+      "type": {
+        "kind": "struct",
+        "fields": [{
+          "name": "fixed",
+          "type": {
+            "defined": {
+              "name": "Fixed",
+              "generics": [{ "kind": "const", "value": "include_str!(\"missing\")" }]
+            }
+          }
+        }]
+      }
+    }
+  ]
+}
+"#;
+    declare_program_compile_fail_case(
+        "declare_program_executable_const_generic",
+        idl,
+        &["expected an IDL const generic literal; executable Rust expressions are not allowed"],
+    );
+}
+
+#[test]
 fn program_interface_mode_compiles_client_and_cpi_surface() {
     CompileCase::new(
         "program_interface_mode",
