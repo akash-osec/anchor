@@ -2905,6 +2905,7 @@ fn gen_declared_program(
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| syn::Error::new(name.span(), "IDL is missing instructions array"))?;
     validate_declare_program_discriminators(idl, name.span())?;
+    let no_const_generics = std::collections::BTreeSet::new();
 
     let types = gen_declare_program_types(idl)?;
     let type_idents = gen_declare_program_type_idents(idl)?;
@@ -2971,13 +2972,13 @@ fn gen_declared_program(
                     format!("argument `{arg_name}` is missing type"),
                 )
             })?;
-            let ty = declare_idl_type_to_tokens(ty_value, name.span())?;
+            let ty = declare_idl_type_to_tokens(ty_value, name.span(), &no_const_generics)?;
             arg_decls.push(quote! { #arg_ident: #ty });
             arg_uses.push(quote! { let _ = #arg_ident; });
         }
         let return_ty = ix
             .get("returns")
-            .map(|ty| declare_idl_type_to_tokens(ty, name.span()))
+            .map(|ty| declare_idl_type_to_tokens(ty, name.span(), &no_const_generics))
             .transpose()?
             .unwrap_or_else(|| quote! { () });
 
@@ -3554,7 +3555,12 @@ fn gen_declare_program_types(idl: &serde_json::Value) -> syn::Result<Vec<TokenSt
                                 format!("struct type `{name}` fields must be an array"),
                             )
                         })?;
-                        gen_declare_program_type_fields(fields, ident.span(), true)?
+                        gen_declare_program_type_fields(
+                            fields,
+                            ident.span(),
+                            true,
+                            &generics.const_generic_names,
+                        )?
                     }
                     None => DeclareTypeFields::Unit,
                 };
@@ -3678,7 +3684,12 @@ fn gen_declare_program_types(idl: &serde_json::Value) -> syn::Result<Vec<TokenSt
                             format!("variant `{variant_name}` fields must be an array"),
                         )
                     })?;
-                    let fields = gen_declare_program_type_fields(fields, ident.span(), false)?;
+                    let fields = gen_declare_program_type_fields(
+                        fields,
+                        ident.span(),
+                        false,
+                        &generics.const_generic_names,
+                    )?;
                     idl_field_tys.extend(fields.tys().iter().cloned());
                     match fields {
                         DeclareTypeFields::Named { fields, .. } => {
@@ -3718,7 +3729,11 @@ fn gen_declare_program_types(idl: &serde_json::Value) -> syn::Result<Vec<TokenSt
                         format!("type alias `{name}` is missing alias"),
                     )
                 })?;
-                let alias = declare_idl_type_to_tokens(alias, ident.span())?;
+                let alias = declare_idl_type_to_tokens(
+                    alias,
+                    ident.span(),
+                    &generics.const_generic_names,
+                )?;
                 let impl_generics = &generics.impl_generics;
                 out.push(quote! {
                     #(#docs)*
@@ -4073,7 +4088,11 @@ fn gen_declare_program_constant(
 
     if let Some(array) = ty_value.get("array").and_then(serde_json::Value::as_array) {
         if array.len() == 2 && array[0].as_str() == Some("u8") {
-            let len = declare_idl_array_len_to_tokens(&array[1], span)?;
+            let len = declare_idl_array_len_to_tokens(
+                &array[1],
+                span,
+                &std::collections::BTreeSet::new(),
+            )?;
             let bytes = parse_declare_program_byte_array(value, span)?;
             if let Some(len) = array[1].as_u64() {
                 let len = len as usize;
@@ -4125,7 +4144,7 @@ fn parse_declare_program_literal_expr(
                     let value = LitStr::new(&value.value(), span);
                     Ok(quote! { #value })
                 }
-                _ => Err(invalid_idl_literal(span, ty)),
+                _ => Err(invalid_idl_literal(span, &format!("{ty} literal"))),
             },
             "bool" => match expr {
                 Expr::Lit(ExprLit {
@@ -4134,7 +4153,7 @@ fn parse_declare_program_literal_expr(
                     let value = LitBool::new(value.value, span);
                     Ok(quote! { #value })
                 }
-                _ => Err(invalid_idl_literal(span, ty)),
+                _ => Err(invalid_idl_literal(span, &format!("{ty} literal"))),
             },
             ty if is_integer_type(ty) => parse_declare_program_integer(ty, expr, span),
             "f32" | "f64" => parse_declare_program_float(ty, expr, span),
@@ -4156,7 +4175,7 @@ fn parse_declare_program_literal_expr(
             )
         })? as usize;
         let Expr::Array(ExprArray { elems, .. }) = expr else {
-            return Err(invalid_idl_literal(span, "array"));
+            return Err(invalid_idl_literal(span, "array literal"));
         };
         if elems.len() != expected {
             return Err(syn::Error::new(
@@ -4180,7 +4199,7 @@ fn parse_declare_program_literal_expr(
 fn invalid_idl_literal(span: proc_macro2::Span, expected: &str) -> syn::Error {
     syn::Error::new(
         span,
-        format!("expected an IDL {expected} literal; executable Rust expressions are not allowed"),
+        format!("expected an IDL {expected}; executable Rust expressions are not allowed"),
     )
 }
 
@@ -4208,9 +4227,9 @@ fn parse_declare_program_integer(
             Expr::Lit(ExprLit {
                 lit: Lit::Int(literal), ..
             }) => (true, literal),
-            _ => return Err(invalid_idl_literal(span, ty)),
+            _ => return Err(invalid_idl_literal(span, &format!("{ty} integer literal"))),
         },
-        _ => return Err(invalid_idl_literal(span, ty)),
+        _ => return Err(invalid_idl_literal(span, &format!("{ty} integer literal"))),
     };
     let suffix = literal.suffix();
     if !suffix.is_empty() && suffix != ty {
@@ -4317,9 +4336,9 @@ fn parse_declare_program_float(
             Expr::Lit(ExprLit {
                 lit: Lit::Float(literal), ..
             }) => (true, literal),
-            _ => return Err(invalid_idl_literal(span, ty)),
+            _ => return Err(invalid_idl_literal(span, &format!("{ty} float literal"))),
         },
-        _ => return Err(invalid_idl_literal(span, ty)),
+        _ => return Err(invalid_idl_literal(span, &format!("{ty} float literal"))),
     };
     let suffix = literal.suffix();
     if !suffix.is_empty() && suffix != ty {
@@ -4362,7 +4381,7 @@ fn declare_idl_const_type_to_tokens(
             _ => {}
         }
     }
-    declare_idl_type_to_tokens(value, span)
+    declare_idl_type_to_tokens(value, span, &std::collections::BTreeSet::new())
 }
 
 fn parse_declare_program_byte_array(value: &str, span: proc_macro2::Span) -> syn::Result<Vec<u8>> {
@@ -4410,6 +4429,7 @@ struct DeclareTypeGenerics {
     ty_generics: TokenStream2,
     idl_where_clause: TokenStream2,
     pod_where_clause: TokenStream2,
+    const_generic_names: std::collections::BTreeSet<String>,
 }
 
 fn gen_declare_program_type_generics(
@@ -4422,12 +4442,14 @@ fn gen_declare_program_type_generics(
             ty_generics: quote! {},
             idl_where_clause: quote! {},
             pod_where_clause: quote! {},
+            const_generic_names: std::collections::BTreeSet::new(),
         });
     };
     let mut impl_params = Vec::new();
     let mut ty_params = Vec::new();
     let mut idl_bounds = Vec::new();
     let mut pod_bounds = Vec::new();
+    let mut const_generic_names = std::collections::BTreeSet::new();
     for generic in generics {
         let name = json_str(generic, "name", span)?;
         let ident = Ident::new(name, span);
@@ -4441,6 +4463,7 @@ fn gen_declare_program_type_generics(
                 });
             }
             "const" => {
+                const_generic_names.insert(name.to_string());
                 let ty = json_str(generic, "type", span)?;
                 let ty: Type = syn::parse_str(ty).map_err(|err| {
                     syn::Error::new(
@@ -4476,6 +4499,7 @@ fn gen_declare_program_type_generics(
         ty_generics,
         idl_where_clause,
         pod_where_clause,
+        const_generic_names,
     })
 }
 
@@ -4654,6 +4678,7 @@ fn gen_declare_program_type_fields(
     fields: &[serde_json::Value],
     span: proc_macro2::Span,
     public: bool,
+    const_generic_names: &std::collections::BTreeSet<String>,
 ) -> syn::Result<DeclareTypeFields> {
     let visibility = public.then(|| quote! { pub });
     let field_shape = serde_json::from_value::<anchor_lang_idl::types::IdlDefinedFields>(
@@ -4673,7 +4698,7 @@ fn gen_declare_program_type_fields(
                         format!("failed to normalize IDL field `{field_name}` type: {err}"),
                     )
                 })?;
-                let ty = declare_idl_type_to_tokens(&ty_value, span)?;
+                let ty = declare_idl_type_to_tokens(&ty_value, span, const_generic_names)?;
                 let field_ident = Ident::new(&to_snake_case(field_name), span);
                 field_tokens.push(quote! { #visibility #field_ident: #ty, });
                 field_tys.push(ty);
@@ -4693,7 +4718,7 @@ fn gen_declare_program_type_fields(
                         format!("failed to normalize tuple field type for declare_program!: {err}"),
                     )
                 })?;
-                let ty = declare_idl_type_to_tokens(&ty_value, span)?;
+                let ty = declare_idl_type_to_tokens(&ty_value, span, const_generic_names)?;
                 field_tokens.push(quote! { #visibility #ty });
                 field_tys.push(ty);
             }
@@ -4708,6 +4733,7 @@ fn gen_declare_program_type_fields(
 fn declare_idl_type_to_tokens(
     value: &serde_json::Value,
     span: proc_macro2::Span,
+    const_generic_names: &std::collections::BTreeSet<String>,
 ) -> syn::Result<TokenStream2> {
     if let Some(s) = value.as_str() {
         return Ok(match s {
@@ -4752,7 +4778,9 @@ fn declare_idl_type_to_tokens(
             .map(|generics| {
                 generics
                     .iter()
-                    .map(|generic| declare_idl_generic_arg_to_tokens(generic, span))
+                    .map(|generic| {
+                        declare_idl_generic_arg_to_tokens(generic, span, const_generic_names)
+                    })
                     .collect::<syn::Result<Vec<_>>>()
             })
             .transpose()?
@@ -4767,11 +4795,11 @@ fn declare_idl_type_to_tokens(
         return Ok(quote! { #ident });
     }
     if let Some(inner) = value.get("vec") {
-        let inner = declare_idl_type_to_tokens(inner, span)?;
+        let inner = declare_idl_type_to_tokens(inner, span, const_generic_names)?;
         return Ok(quote! { anchor_lang::__alloc::vec::Vec<#inner> });
     }
     if let Some(inner) = value.get("option") {
-        let inner = declare_idl_type_to_tokens(inner, span)?;
+        let inner = declare_idl_type_to_tokens(inner, span, const_generic_names)?;
         return Ok(quote! { Option<#inner> });
     }
     if let Some(array) = value.get("array").and_then(serde_json::Value::as_array) {
@@ -4781,8 +4809,8 @@ fn declare_idl_type_to_tokens(
                 "IDL array type must have two elements",
             ));
         }
-        let inner = declare_idl_type_to_tokens(&array[0], span)?;
-        let len = declare_idl_array_len_to_tokens(&array[1], span)?;
+        let inner = declare_idl_type_to_tokens(&array[0], span, const_generic_names)?;
+        let len = declare_idl_array_len_to_tokens(&array[1], span, const_generic_names)?;
         return Ok(quote! { [#inner; #len] });
     }
 
@@ -4810,6 +4838,7 @@ fn declare_idl_defined_builtin(name: &str) -> Option<TokenStream2> {
 fn declare_idl_array_len_to_tokens(
     value: &serde_json::Value,
     span: proc_macro2::Span,
+    const_generic_names: &std::collections::BTreeSet<String>,
 ) -> syn::Result<TokenStream2> {
     if let Some(len) = value.as_u64() {
         let len = len as usize;
@@ -4820,6 +4849,12 @@ fn declare_idl_array_len_to_tokens(
         .and_then(serde_json::Value::as_str)
         .or_else(|| value.as_str());
     if let Some(generic) = generic {
+        if !const_generic_names.contains(generic) {
+            return Err(syn::Error::new(
+                span,
+                format!("undeclared IDL const generic `{generic}`"),
+            ));
+        }
         let ident: Ident = syn::parse_str(generic).map_err(|err| {
             syn::Error::new(
                 span,
@@ -4837,6 +4872,7 @@ fn declare_idl_array_len_to_tokens(
 fn declare_idl_generic_arg_to_tokens(
     value: &serde_json::Value,
     span: proc_macro2::Span,
+    const_generic_names: &std::collections::BTreeSet<String>,
 ) -> syn::Result<TokenStream2> {
     match json_str(value, "kind", span)? {
         "type" => {
@@ -4846,22 +4882,77 @@ fn declare_idl_generic_arg_to_tokens(
                     format!("generic type arg is missing type in `{value}`"),
                 )
             })?;
-            declare_idl_type_to_tokens(ty, span)
+            declare_idl_type_to_tokens(ty, span, const_generic_names)
         }
         "const" => {
             let value = json_str(value, "value", span)?;
-            let expr: Expr = syn::parse_str(value).map_err(|err| {
-                syn::Error::new(
-                    span,
-                    format!("failed to parse const generic value `{value}`: {err}"),
-                )
-            })?;
-            Ok(quote! { #expr })
+            parse_declare_program_generic_arg(value, span, const_generic_names)
         }
         other => Err(syn::Error::new(
             span,
             format!("unsupported IDL generic arg kind `{other}`"),
         )),
+    }
+}
+
+fn parse_declare_program_generic_arg(
+    value: &str,
+    span: proc_macro2::Span,
+    const_generic_names: &std::collections::BTreeSet<String>,
+) -> syn::Result<TokenStream2> {
+    let expr = syn::parse_str::<Expr>(value).map_err(|err| {
+        syn::Error::new(
+            span,
+            format!("expected an IDL const generic literal or declared parameter: {err}"),
+        )
+    })?;
+    if let Expr::Path(path) = &expr {
+        if path.qself.is_none() && path.path.segments.len() == 1 {
+            let ident = &path.path.segments[0].ident;
+            if const_generic_names.contains(&ident.to_string()) {
+                return Ok(quote! { #ident });
+            }
+        }
+        return Err(invalid_idl_literal(span, "declared const generic parameter"));
+    }
+    match &expr {
+        Expr::Lit(ExprLit {
+            lit: Lit::Int(literal), ..
+        }) => {
+            if !literal.suffix().is_empty() {
+                return Err(invalid_idl_literal(span, "unsuffixed const generic literal"));
+            }
+            let value = literal.base10_parse::<u128>().map_err(|err| {
+                syn::Error::new(span, format!("invalid const generic literal: {err}"))
+            })?;
+            let value = proc_macro2::Literal::u128_unsuffixed(value);
+            Ok(quote! { #value })
+        }
+        Expr::Unary(ExprUnary {
+            op: UnOp::Neg(_),
+            expr,
+            ..
+        }) => {
+            let Expr::Lit(ExprLit {
+                lit: Lit::Int(literal), ..
+            }) = expr.as_ref()
+            else {
+                return Err(invalid_idl_literal(span, "const generic integer literal"));
+            };
+            if !literal.suffix().is_empty() {
+                return Err(invalid_idl_literal(span, "unsuffixed const generic literal"));
+            }
+            let magnitude = literal.base10_parse::<u128>().map_err(|err| {
+                syn::Error::new(span, format!("invalid const generic literal: {err}"))
+            })?;
+            let value = i128::try_from(magnitude)
+                .ok()
+                .and_then(|value| value.checked_neg())
+                .ok_or_else(|| syn::Error::new(span, "const generic literal is out of range"))?;
+            let value = proc_macro2::Literal::i128_unsuffixed(value);
+            Ok(quote! { #value })
+        }
+        _ => Err(invalid_idl_literal(span, "const generic literal")),
     }
 }
 
