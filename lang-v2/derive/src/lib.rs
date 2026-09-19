@@ -12,10 +12,11 @@ mod pod_wrapper;
 use {
     proc_macro::TokenStream,
     proc_macro2::{Span, TokenStream as TokenStream2},
-    quote::quote,
+    quote::{quote, ToTokens},
     syn::{
-        parse::Parser, parse_macro_input, spanned::Spanned, Data, DeriveInput, Expr, Fields, FnArg,
-        Ident, ItemMod, ItemStruct, Pat, Type,
+        parse::Parser, parse_macro_input, spanned::Spanned, Data, DeriveInput, Expr, ExprArray,
+        ExprLit, ExprUnary, Fields, FnArg, Ident, ItemMod, ItemStruct, Lit, LitBool, LitStr, Pat,
+        Type, UnOp,
     },
 };
 
@@ -4059,16 +4060,6 @@ fn gen_declare_program_constant(
         return Ok(quote! { pub const #ident: &'static [u8] = &[#(#bytes),*]; });
     }
 
-    if ty_value.as_str() == Some("string") {
-        let expr: Expr = syn::parse_str(value).map_err(|err| {
-            syn::Error::new(
-                span,
-                format!("failed to parse string constant value: {err}"),
-            )
-        })?;
-        return Ok(quote! { pub const #ident: &'static str = #expr; });
-    }
-
     if ty_value.as_str() == Some("pubkey") {
         let value = syn::parse_str::<syn::LitStr>(value)
             .map(|value| value.value())
@@ -4102,9 +4093,262 @@ fn gen_declare_program_constant(
     }
 
     let ty = declare_idl_const_type_to_tokens(ty_value, span)?;
-    let expr: Expr = syn::parse_str(value)
-        .map_err(|err| syn::Error::new(span, format!("failed to parse constant value: {err}")))?;
-    Ok(quote! { pub const #ident: #ty = #expr; })
+    let literal = parse_declare_program_literal(ty_value, value, span)?;
+    Ok(quote! { pub const #ident: #ty = #literal; })
+}
+
+fn parse_declare_program_literal(
+    ty_value: &serde_json::Value,
+    value: &str,
+    span: proc_macro2::Span,
+) -> syn::Result<TokenStream2> {
+    let expr = syn::parse_str::<Expr>(value).map_err(|err| {
+        syn::Error::new(
+            span,
+            format!("expected an IDL literal constant value, got `{value}`: {err}"),
+        )
+    })?;
+    parse_declare_program_literal_expr(ty_value, &expr, span)
+}
+
+fn parse_declare_program_literal_expr(
+    ty_value: &serde_json::Value,
+    expr: &Expr,
+    span: proc_macro2::Span,
+) -> syn::Result<TokenStream2> {
+    if let Some(ty) = ty_value.as_str() {
+        return match ty {
+            "string" => match expr {
+                Expr::Lit(ExprLit {
+                    lit: Lit::Str(value), ..
+                }) => {
+                    let value = LitStr::new(&value.value(), span);
+                    Ok(quote! { #value })
+                }
+                _ => Err(invalid_idl_literal(span, ty)),
+            },
+            "bool" => match expr {
+                Expr::Lit(ExprLit {
+                    lit: Lit::Bool(value), ..
+                }) => {
+                    let value = LitBool::new(value.value, span);
+                    Ok(quote! { #value })
+                }
+                _ => Err(invalid_idl_literal(span, ty)),
+            },
+            ty if is_integer_type(ty) => parse_declare_program_integer(ty, expr, span),
+            "f32" | "f64" => parse_declare_program_float(ty, expr, span),
+            _ => Err(invalid_idl_literal(span, ty)),
+        };
+    }
+
+    if let Some(array) = ty_value.get("array").and_then(serde_json::Value::as_array) {
+        if array.len() != 2 {
+            return Err(syn::Error::new(
+                span,
+                "IDL array constant type must have two elements",
+            ));
+        }
+        let expected = array[1].as_u64().ok_or_else(|| {
+            syn::Error::new(
+                span,
+                "array constant length must be a concrete non-negative integer",
+            )
+        })? as usize;
+        let Expr::Array(ExprArray { elems, .. }) = expr else {
+            return Err(invalid_idl_literal(span, "array"));
+        };
+        if elems.len() != expected {
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "array constant has {} elements, expected {expected}",
+                    elems.len()
+                ),
+            ));
+        }
+        let elements = elems
+            .iter()
+            .map(|element| parse_declare_program_literal_expr(&array[0], element, span))
+            .collect::<syn::Result<Vec<_>>>()?;
+        return Ok(quote! { [#(#elements),*] });
+    }
+
+    Err(invalid_idl_literal(span, "supported scalar or array"))
+}
+
+fn invalid_idl_literal(span: proc_macro2::Span, expected: &str) -> syn::Error {
+    syn::Error::new(
+        span,
+        format!("expected an IDL {expected} literal; executable Rust expressions are not allowed"),
+    )
+}
+
+fn is_integer_type(ty: &str) -> bool {
+    matches!(
+        ty,
+        "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128"
+    )
+}
+
+fn parse_declare_program_integer(
+    ty: &str,
+    expr: &Expr,
+    span: proc_macro2::Span,
+) -> syn::Result<TokenStream2> {
+    let (negative, literal) = match expr {
+        Expr::Lit(ExprLit {
+            lit: Lit::Int(literal), ..
+        }) => (false, literal),
+        Expr::Unary(ExprUnary {
+            op: UnOp::Neg(_),
+            expr,
+            ..
+        }) => match expr.as_ref() {
+            Expr::Lit(ExprLit {
+                lit: Lit::Int(literal), ..
+            }) => (true, literal),
+            _ => return Err(invalid_idl_literal(span, ty)),
+        },
+        _ => return Err(invalid_idl_literal(span, ty)),
+    };
+    let suffix = literal.suffix();
+    if !suffix.is_empty() && suffix != ty {
+        return Err(syn::Error::new(
+            span,
+            format!("integer literal suffix `{suffix}` does not match IDL type `{ty}`"),
+        ));
+    }
+    let magnitude = literal.base10_parse::<u128>().map_err(|err| {
+        syn::Error::new(span, format!("invalid `{ty}` literal: {err}"))
+    })?;
+    let is_signed = ty.starts_with('i');
+    if negative && !is_signed {
+        return Err(invalid_idl_literal(span, ty));
+    }
+    let bits = ty[1..].parse::<u32>().expect("integer IDL type width");
+    let max_unsigned = if bits == 128 {
+        u128::MAX
+    } else {
+        (1u128 << bits) - 1
+    };
+    if is_signed {
+        let max_positive = if bits == 128 {
+            i128::MAX as u128
+        } else {
+            (1u128 << (bits - 1)) - 1
+        };
+        let max_negative = max_positive + 1;
+        if (!negative && magnitude > max_positive) || (negative && magnitude > max_negative) {
+            return Err(syn::Error::new(span, format!("`{value}` does not fit in `{ty}`", value = expr.to_token_stream())));
+        }
+        let value = if negative {
+            if magnitude == max_negative {
+                i128::MIN >> (128 - bits)
+            } else {
+                -(magnitude as i128)
+            }
+        } else {
+            magnitude as i128
+        };
+        return Ok(match ty {
+            "i8" => {
+                let value = value as i8;
+                quote! { #value }
+            }
+            "i16" => {
+                let value = value as i16;
+                quote! { #value }
+            }
+            "i32" => {
+                let value = value as i32;
+                quote! { #value }
+            }
+            "i64" => {
+                let value = value as i64;
+                quote! { #value }
+            }
+            "i128" => quote! { #value },
+            _ => unreachable!(),
+        });
+    }
+    if magnitude > max_unsigned {
+        return Err(syn::Error::new(
+            span,
+            format!("`{}` does not fit in `{ty}`", expr.to_token_stream()),
+        ));
+    }
+    Ok(match ty {
+        "u8" => {
+            let value = magnitude as u8;
+            quote! { #value }
+        }
+        "u16" => {
+            let value = magnitude as u16;
+            quote! { #value }
+        }
+        "u32" => {
+            let value = magnitude as u32;
+            quote! { #value }
+        }
+        "u64" => {
+            let value = magnitude as u64;
+            quote! { #value }
+        }
+        "u128" => quote! { #magnitude },
+        _ => unreachable!(),
+    })
+}
+
+fn parse_declare_program_float(
+    ty: &str,
+    expr: &Expr,
+    span: proc_macro2::Span,
+) -> syn::Result<TokenStream2> {
+    let (negative, literal) = match expr {
+        Expr::Lit(ExprLit {
+            lit: Lit::Float(literal), ..
+        }) => (false, literal),
+        Expr::Unary(ExprUnary {
+            op: UnOp::Neg(_),
+            expr,
+            ..
+        }) => match expr.as_ref() {
+            Expr::Lit(ExprLit {
+                lit: Lit::Float(literal), ..
+            }) => (true, literal),
+            _ => return Err(invalid_idl_literal(span, ty)),
+        },
+        _ => return Err(invalid_idl_literal(span, ty)),
+    };
+    let suffix = literal.suffix();
+    if !suffix.is_empty() && suffix != ty {
+        return Err(syn::Error::new(
+            span,
+            format!("float literal suffix `{suffix}` does not match IDL type `{ty}`"),
+        ));
+    }
+    let value = literal.base10_parse::<f64>().map_err(|err| {
+        syn::Error::new(span, format!("invalid `{ty}` literal: {err}"))
+    })?;
+    if !value.is_finite() {
+        return Err(syn::Error::new(
+            span,
+            format!("`{}` is not a finite `{ty}` literal", expr.to_token_stream()),
+        ));
+    }
+    let value = if negative { -value } else { value };
+    Ok(match ty {
+        "f32" => {
+            let value = value as f32;
+            if !value.is_finite() {
+                return Err(syn::Error::new(span, "float literal does not fit in `f32`"));
+            }
+            quote! { #value }
+        }
+        "f64" => quote! { #value },
+        _ => unreachable!(),
+    })
 }
 
 fn declare_idl_const_type_to_tokens(
