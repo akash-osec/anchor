@@ -11,7 +11,7 @@
 //! script only discovers eligible structs and emits the public `.equ` names.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 use syn::{punctuated::Punctuated, Meta, Token};
@@ -43,7 +43,15 @@ pub(crate) fn generate_with_operands(
     let root_dir = lib_rs.parent().unwrap_or_else(|| Path::new("."));
     let mut visited = HashSet::new();
     let mut operands = Vec::new();
-    let output = generate_file(lib_rs, root_dir, &mut visited, &[], &mut operands);
+    let mut symbols = HashMap::new();
+    let output = generate_file(
+        lib_rs,
+        root_dir,
+        &mut visited,
+        &[],
+        &mut operands,
+        &mut symbols,
+    );
     let mut visited_files: Vec<_> = visited.into_iter().collect();
     visited_files.sort();
     (output, operands, visited_files)
@@ -55,6 +63,7 @@ fn generate_file(
     visited: &mut HashSet<PathBuf>,
     module_path: &[String],
     operands: &mut Vec<RustConstOperand>,
+    symbols: &mut HashMap<String, String>,
 ) -> String {
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     if !visited.insert(canonical) {
@@ -80,6 +89,7 @@ fn generate_file(
         visited,
         module_path,
         operands,
+        symbols,
         &mut out,
     );
     out
@@ -92,6 +102,7 @@ fn visit_items(
     visited: &mut HashSet<PathBuf>,
     module_path: &[String],
     operands: &mut Vec<RustConstOperand>,
+    symbols: &mut HashMap<String, String>,
     out: &mut String,
 ) {
     for item in items {
@@ -99,7 +110,7 @@ fn visit_items(
             syn::Item::Struct(s)
                 if has_account_attr(s) && cfg_enabled(&s.attrs) == CfgState::Enabled =>
             {
-                if let Some(block) = emit_struct(s, module_path, operands) {
+                if let Some(block) = emit_struct(s, module_path, operands, symbols) {
                     out.push_str(&block);
                 }
             }
@@ -110,6 +121,7 @@ fn visit_items(
                 visited,
                 module_path,
                 operands,
+                symbols,
                 out,
             ),
             _ => {}
@@ -124,6 +136,7 @@ fn visit_module(
     visited: &mut HashSet<PathBuf>,
     module_path: &[String],
     operands: &mut Vec<RustConstOperand>,
+    symbols: &mut HashMap<String, String>,
     out: &mut String,
 ) {
     let mut child_module_path = module_path.to_vec();
@@ -137,6 +150,7 @@ fn visit_module(
             visited,
             &child_module_path,
             operands,
+            symbols,
             out,
         );
     } else if let Some((path, child_dir)) = resolve_module_file(source_dir, module_dir, module) {
@@ -146,6 +160,7 @@ fn visit_module(
             visited,
             &child_module_path,
             operands,
+            symbols,
         ));
     }
 }
@@ -448,6 +463,7 @@ fn emit_struct(
     s: &syn::ItemStruct,
     module_path: &[String],
     operands: &mut Vec<RustConstOperand>,
+    symbols: &mut HashMap<String, String>,
 ) -> Option<String> {
     let name = &s.ident;
     let fields = match &s.fields {
@@ -465,9 +481,7 @@ fn emit_struct(
     }
 
     let type_path = rust_type_path(module_path, name);
-    let mut out = String::new();
-    out.push_str(&format!("# {name} field offsets and sizes.\n"));
-    out.push_str(&format!("# {}\n", "-".repeat(70)));
+    let mut declarations: Vec<(String, String, Option<RustConstOperand>)> = Vec::new();
 
     for field in enabled_fields {
         let field_name = field.ident.as_ref()?;
@@ -479,31 +493,86 @@ fn emit_struct(
         }
 
         let operand_name = operand_name(module_path, name, &name_str);
-        out.push_str(&format!(".equ {name}__{field_name}, {{{operand_name}}}\n"));
-        operands.push(RustConstOperand {
-            name: operand_name,
-            expression: format!("core::mem::offset_of!({type_path}, {field_name}) as i32"),
-        });
+        declarations.push((
+            format!("{name}__{field_name}"),
+            symbol_origin(module_path, name, &name_str, false),
+            Some(RustConstOperand {
+                name: operand_name.clone(),
+                expression: format!("core::mem::offset_of!({type_path}, {field_name}) as i32"),
+            }),
+        ));
     }
 
     let size_operand = operand_name(module_path, name, "SIZE");
-    out.push_str(&format!(".equ {name}__SIZE, {{{size_operand}}}\n"));
-    operands.push(RustConstOperand {
-        name: size_operand,
-        expression: format!("core::mem::size_of::<{type_path}>() as i32"),
-    });
-    out.push_str(&format!(".equ {name}__DISC_SIZE, 8\n"));
-    let init_space_operand = operand_name(module_path, name, "INIT_SPACE");
-    out.push_str(&format!(
-        ".equ {name}__INIT_SPACE, {{{init_space_operand}}}\n"
+    declarations.push((
+        format!("{name}__SIZE"),
+        symbol_origin(module_path, name, "SIZE", true),
+        Some(RustConstOperand {
+            name: size_operand,
+            expression: format!("core::mem::size_of::<{type_path}>() as i32"),
+        }),
     ));
-    operands.push(RustConstOperand {
-        name: init_space_operand,
-        expression: format!("(8 + core::mem::size_of::<{type_path}>()) as i32"),
-    });
+    declarations.push((
+        format!("{name}__DISC_SIZE"),
+        symbol_origin(module_path, name, "DISC_SIZE", true),
+        None,
+    ));
+    let init_space_operand = operand_name(module_path, name, "INIT_SPACE");
+    declarations.push((
+        format!("{name}__INIT_SPACE"),
+        symbol_origin(module_path, name, "INIT_SPACE", true),
+        Some(RustConstOperand {
+            name: init_space_operand,
+            expression: format!("(8 + core::mem::size_of::<{type_path}>()) as i32"),
+        }),
+    ));
+
+    let mut local_symbols = HashMap::new();
+    for (symbol, origin, _) in &declarations {
+        if let Some(previous) = local_symbols.insert(symbol.clone(), origin.clone()) {
+            panic!(
+                "anchor-asm: duplicate generated assembly symbol {symbol}; emitted by {previous} and {origin}"
+            );
+        }
+        if let Some(previous) = symbols.get(symbol) {
+            panic!(
+                "anchor-asm: duplicate generated assembly symbol {symbol}; emitted by {previous} and {origin}"
+            );
+        }
+    }
+    symbols.extend(local_symbols);
+
+    let mut out = String::new();
+    out.push_str(&format!("# {name} field offsets and sizes.\n"));
+    out.push_str(&format!("# {}\n", "-".repeat(70)));
+
+    for (symbol, _, operand) in declarations {
+        match operand {
+            Some(operand) => {
+                out.push_str(&format!(".equ {symbol}, {{{}}}\n", operand.name));
+                operands.push(operand);
+            }
+            None => out.push_str(&format!(".equ {symbol}, 8\n")),
+        }
+    }
     out.push_str(&format!("# {}\n\n", "-".repeat(70)));
 
     Some(out)
+}
+
+fn symbol_origin(
+    module_path: &[String],
+    type_name: &syn::Ident,
+    member_name: &str,
+    metadata: bool,
+) -> String {
+    let mut path = rust_type_path(module_path, type_name);
+    path.push_str("::");
+    path.push_str(member_name);
+    if metadata {
+        path.push_str(" (metadata)");
+    }
+    path
 }
 
 fn rust_type_path(module_path: &[String], name: &syn::Ident) -> String {
@@ -1142,4 +1211,5 @@ mod tests {
         assert_placeholder(&result, "SignedWide", "SIZE");
         std::fs::remove_file(tmp).ok();
     }
+
 }
