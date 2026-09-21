@@ -1212,4 +1212,71 @@ mod tests {
         std::fs::remove_file(tmp).ok();
     }
 
+    #[test]
+    fn duplicate_symbols_report_both_module_origins() {
+        let dir = temp_test_dir("duplicate-symbols");
+        let lib_rs = dir.join("lib.rs");
+        let instructions_rs = dir.join("instructions.rs");
+
+        std::fs::write(
+            &lib_rs,
+            r#"
+            mod state {
+                #[repr(C)]
+                pub struct Config {
+                    pub pad: u64,
+                    pub authority: [u8; 32],
+                }
+            }
+
+            #[path = "instructions.rs"]
+            mod instructions;
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            &instructions_rs,
+            r#"
+            #[repr(C)]
+            pub struct Config {
+                pub authority: [u8; 32],
+            }
+            "#,
+        )
+        .unwrap();
+
+        let result = std::panic::catch_unwind(|| generate(&lib_rs));
+        let message = result
+            .unwrap_err()
+            .downcast::<String>()
+            .map(|message| *message)
+            .unwrap();
+        assert!(message.contains("Config__authority"));
+        assert!(message.contains("crate::state::Config::authority"));
+        assert!(message.contains("crate::instructions::Config::authority"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn reserved_metadata_symbols_report_field_collisions() {
+        for field in ["SIZE", "DISC_SIZE", "INIT_SPACE"] {
+            let dir = temp_test_dir("reserved-symbol");
+            let lib_rs = dir.join("lib.rs");
+            let source = format!("#[repr(C)]\npub struct Config {{\n    pub {field}: u64,\n}}\n");
+            std::fs::write(&lib_rs, source).unwrap();
+
+            let result = std::panic::catch_unwind(|| generate(&lib_rs));
+            let message = result
+                .unwrap_err()
+                .downcast::<String>()
+                .map(|message| *message)
+                .unwrap();
+            assert!(message.contains(&format!("Config__{field}")));
+            assert!(message.contains(&format!("crate::Config::{field}")));
+            assert!(message.contains(&format!("crate::Config::{field} (metadata)")));
+
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
 }
