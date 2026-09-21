@@ -1,4 +1,4 @@
-//! Generates `.equ` assembly constants from `#[account]` structs in lib.rs.
+//! Generates `.equiv` assembly constants from `#[account]` structs in lib.rs.
 //!
 //! For each struct annotated with `#[account]`:
 //! - `StructName__SIZE` — `size_of::<Struct>()`
@@ -8,7 +8,7 @@
 //!
 //! Offsets and sizes are evaluated by rustc in the program crate through
 //! `core::mem::offset_of!` and `core::mem::size_of!` const operands. The build
-//! script only discovers eligible structs and emits the public `.equ` names.
+//! script only discovers eligible structs and emits the public `.equiv` names.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -22,7 +22,7 @@ pub(crate) struct RustConstOperand {
     pub(crate) expression: String,
 }
 
-/// Parse `lib.rs` and generate `.equ` preamble for all `#[account]` structs.
+/// Parse `lib.rs` and generate `.equiv` preamble for all `#[account]` structs.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn generate(lib_rs: &Path) -> String {
     generate_with_operands(lib_rs).0
@@ -458,7 +458,7 @@ fn cfg_env_name(value: &str) -> String {
         .collect()
 }
 
-/// Emit `.equ` constants for a single struct.
+/// Emit `.equiv` constants for a single struct.
 fn emit_struct(
     s: &syn::ItemStruct,
     module_path: &[String],
@@ -549,10 +549,10 @@ fn emit_struct(
     for (symbol, _, operand) in declarations {
         match operand {
             Some(operand) => {
-                out.push_str(&format!(".equ {symbol}, {{{}}}\n", operand.name));
+                out.push_str(&format!(".equiv {symbol}, {{{}}}\n", operand.name));
                 operands.push(operand);
             }
-            None => out.push_str(&format!(".equ {symbol}, 8\n")),
+            None => out.push_str(&format!(".equiv {symbol}, 8\n")),
         }
     }
     out.push_str(&format!("# {}\n\n", "-".repeat(70)));
@@ -656,7 +656,7 @@ mod tests {
     }
 
     fn assert_placeholder(result: &str, struct_name: &str, field_name: &str) {
-        let prefix = format!(".equ {struct_name}__{field_name}, {{");
+        let prefix = format!(".equiv {struct_name}__{field_name}, {{");
         assert!(
             result.contains(&prefix),
             "missing placeholder {prefix:?}: {result}"
@@ -1119,8 +1119,8 @@ mod tests {
         let tmp = std::env::temp_dir().join("anchor_asm_test_qualified_type.rs");
         std::fs::write(&tmp, source).unwrap();
         let (result, operands, _) = generate_with_operands(&tmp);
-        assert!(result.contains(".equ Registry__admin, {__anchor_asm_Registry_admin}"));
-        assert!(result.contains(".equ Registry__SIZE, {__anchor_asm_Registry_SIZE}"));
+        assert!(result.contains(".equiv Registry__admin, {__anchor_asm_Registry_admin}"));
+        assert!(result.contains(".equiv Registry__SIZE, {__anchor_asm_Registry_SIZE}"));
         assert!(operands.iter().any(|operand| {
             operand.name == "__anchor_asm_Registry_admin"
                 && operand.expression == "core::mem::offset_of!(crate::Registry, admin) as i32"
