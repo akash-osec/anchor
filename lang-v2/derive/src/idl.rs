@@ -138,6 +138,14 @@ impl<'a> TypeLowerer<'a> {
             PathArguments::AngleBracketed(arguments) => {
                 for argument in &arguments.args {
                     match argument {
+                        // `MAX` in `Buf<MAX>` is parsed as a type by syn because
+                        // type and const identifiers are indistinguishable here.
+                        // Follow Rust naming conventions to recover the const form.
+                        syn::GenericArgument::Type(ty) if looks_like_const_ident(ty) => generics
+                            .push(json!({
+                                "kind": "const",
+                                "value": quote!(#ty).to_string().replace(' ', ""),
+                            })),
                         syn::GenericArgument::Type(ty) => generics.push(json!({
                             "kind": "type",
                             "type": self.lower(ty),
@@ -330,6 +338,18 @@ fn first_type_arg(segment: &syn::PathSegment) -> Option<&Type> {
 fn is_u8_path(ty: &Type) -> bool {
     matches!(ty, Type::Path(path) if path.qself.is_none()
         && normalize_builtin_path(&path_name(path)) == "u8")
+}
+
+fn looks_like_const_ident(ty: &Type) -> bool {
+    let Type::Path(path) = ty else { return false };
+    if path.qself.is_some() {
+        return false;
+    }
+    let Some(segment) = path.path.segments.last() else {
+        return false;
+    };
+    let ident = segment.ident.to_string();
+    ident.len() > 1 && ident == ident.to_uppercase()
 }
 
 fn peel_expr(expr: &Expr) -> &Expr {
@@ -1587,7 +1607,6 @@ mod tests {
                 }
             })
         );
-
         let nested: Type = syn::parse_quote!(Wrapper<Vec<u64>>);
         assert_eq!(
             rust_type_to_idl_value(&nested),
