@@ -1607,6 +1607,18 @@ mod tests {
                 }
             })
         );
+
+        let buf_max: Type = syn::parse_quote!(Buf<MAX>);
+        assert_eq!(
+            rust_type_to_idl_value(&buf_max),
+            json!({
+                "defined": {
+                    "name": "Buf",
+                    "generics": [{ "kind": "const", "value": "MAX" }],
+                }
+            })
+        );
+
         let nested: Type = syn::parse_quote!(Wrapper<Vec<u64>>);
         assert_eq!(
             rust_type_to_idl_value(&nested),
