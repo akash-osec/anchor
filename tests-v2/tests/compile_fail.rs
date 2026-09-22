@@ -198,6 +198,24 @@ fn declare_program_rejects_executable_constant_values() {
 }
 
 #[test]
+fn declare_program_rejects_executable_string_constant_values() {
+    let value = serde_json::to_string("include_str!(\"missing\")").unwrap();
+    let idl = format!(
+        r#"{{
+  "address": "11111111111111111111111111111111",
+  "metadata": {{ "name": "poison", "version": "0.1.0", "spec": "0.1.0" }},
+  "instructions": [],
+  "constants": [{{ "name": "VALUE", "type": "string", "value": {value} }}]
+}}"#
+    );
+    declare_program_compile_fail_case(
+        "declare_program_include_str_string_constant",
+        &idl,
+        &["expected an IDL scalar literal; executable Rust expressions are not allowed"],
+    );
+}
+
+#[test]
 fn declare_program_rejects_executable_const_generic_values() {
     let idl = r#"
 {
