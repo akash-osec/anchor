@@ -54,8 +54,21 @@ fn plain_enum_emits_variants() {
 
 #[test]
 fn opted_in_nested_pod_emits_bytemuck_layout() {
-    let json = <accounts_test::NestedPod as IdlAccountType>::__idl_type_def()
-        .expect("NestedPod should emit an IDL type");
+    let mut accounts = Vec::new();
+    let mut types = Vec::new();
+    <accounts_test::NestedPodContainer as IdlAccountType>::__register_idl_deps(
+        &mut accounts,
+        &mut types,
+    );
+    let json = types
+        .iter()
+        .find(|json| {
+            serde_json::from_str::<IdlTypeDef>(json)
+                .map(|type_def| type_def.name == "NestedPod")
+                .unwrap_or(false)
+        })
+        .copied()
+        .expect("NestedPod dependency should emit an IDL type");
     assert!(json.contains("\"serialization\":\"bytemuck\""), "{json}");
     assert!(json.contains("\"repr\":{\"kind\":\"c\"}"), "{json}");
 }
