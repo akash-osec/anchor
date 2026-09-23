@@ -11,6 +11,8 @@ use {
     solana_program_error::{ProgramError, ProgramResult},
 };
 
+type CpiPostInvokeHook = unsafe fn(*mut (), &AccountView) -> ProgramResult;
+
 /// Zero-cost CPI handle that borrows an anchor account at the Rust level.
 ///
 /// Obtained via [`AnchorAccount::cpi_handle`] (shared borrow) or by erasing a
@@ -30,6 +32,8 @@ pub struct CpiHandle<'a> {
     signer: bool,
     borrow_check: bool,
     relax_readonly_borrow: bool,
+    post_invoke_hook: Option<CpiPostInvokeHook>,
+    post_invoke_context: *mut (),
 }
 
 /// Typed mutable CPI handle for API-facing CPI account structs.
@@ -41,6 +45,8 @@ pub struct CpiHandleMut<'a> {
     view: &'a AccountView,
     signer: bool,
     borrow_check: bool,
+    post_invoke_hook: Option<CpiPostInvokeHook>,
+    post_invoke_context: *mut (),
 }
 
 pub(crate) struct CpiBorrowGuard {
@@ -71,6 +77,8 @@ impl<'a> CpiHandle<'a> {
             signer: view.is_signer(),
             borrow_check,
             relax_readonly_borrow,
+            post_invoke_hook: None,
+            post_invoke_context: core::ptr::null_mut(),
         }
     }
 
@@ -87,6 +95,8 @@ impl<'a> CpiHandle<'a> {
             signer: view.is_signer(),
             borrow_check,
             relax_readonly_borrow: false,
+            post_invoke_hook: None,
+            post_invoke_context: core::ptr::null_mut(),
         }
     }
 
@@ -157,6 +167,14 @@ impl<'a> CpiHandle<'a> {
     }
 
     #[inline(always)]
+    pub(crate) fn run_post_invoke_hook(&self) -> ProgramResult {
+        match self.post_invoke_hook {
+            Some(hook) => unsafe { hook(self.post_invoke_context, self.view) },
+            None => Ok(()),
+        }
+    }
+
+    #[inline(always)]
     pub(crate) fn enter_cpi(&self) -> Option<CpiBorrowGuard> {
         if !self.writable && self.relax_readonly_borrow {
             let borrow_state = self.view.account_ptr().cast_mut().cast::<u8>();
@@ -193,7 +211,20 @@ impl<'a> CpiHandleMut<'a> {
             view,
             signer: view.is_signer(),
             borrow_check,
+            post_invoke_hook: None,
+            post_invoke_context: core::ptr::null_mut(),
         }
+    }
+
+    #[inline(always)]
+    pub(crate) fn with_post_invoke_hook(
+        mut self,
+        hook: CpiPostInvokeHook,
+        context: *mut (),
+    ) -> Self {
+        self.post_invoke_hook = Some(hook);
+        self.post_invoke_context = context;
+        self
     }
 
     /// The account's on-chain address.
@@ -247,6 +278,8 @@ impl<'a> From<CpiHandleMut<'a>> for CpiHandle<'a> {
             signer: handle.signer,
             borrow_check: handle.borrow_check,
             relax_readonly_borrow: false,
+            post_invoke_hook: handle.post_invoke_hook,
+            post_invoke_context: handle.post_invoke_context,
         }
     }
 }
@@ -265,6 +298,13 @@ pub(crate) fn enter_cpi<'a>(handles: &[CpiHandle<'a>]) -> alloc::vec::Vec<CpiBor
         }
     }
     guards
+}
+
+pub(crate) fn run_post_invoke_hooks(handles: &[CpiHandle<'_>]) -> ProgramResult {
+    for handle in handles {
+        handle.run_post_invoke_hook()?;
+    }
+    Ok(())
 }
 
 /// Converts a CPI accounts struct into instruction metadata and handles.

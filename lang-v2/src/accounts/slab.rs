@@ -317,7 +317,9 @@ where
     /// changed owner, discriminator, data length, or tail metadata.
     ///
     /// Unlike [`super::serialized_account::SerializedAccount::reacquire_borrow_mut`],
-    /// this does not need a preceding `release_borrow()`: `Slab` keeps no
+    /// Safe CPI automatically invokes this for mutable handles obtained from
+    /// this slab. Raw CPI paths still need an explicit call. This does not
+    /// need a preceding `release_borrow()`: `Slab` keeps no
     /// `Ref` / `RefMut` guard alive, only a raw `AccountView` plus cached
     /// pointers into the same runtime buffer. Use this when a CPI may have
     /// mutated the account and you want to ensure the live bytes still
@@ -338,6 +340,14 @@ where
         };
 
         Ok(())
+    }
+
+    unsafe fn post_cpi_revalidate_hook(
+        context: *mut (),
+        _view: &AccountView,
+    ) -> Result<(), ProgramError> {
+        let slab = unsafe { &mut *context.cast::<Self>() };
+        slab.revalidate_after_cpi()
     }
 
     /// Validate `len <= capacity` for the tail region before we do the
@@ -905,7 +915,12 @@ where
     #[inline(always)]
     fn try_cpi_handle_mut(&mut self) -> Result<crate::CpiHandleMut<'_>, ProgramError> {
         require!(self.account().is_writable(), ProgramError::InvalidArgument);
-        Ok(crate::CpiHandleMut::without_borrow_check(self.account()))
+        let self_ptr = self as *mut Self;
+        let account = unsafe { &(*self_ptr).view };
+        Ok(crate::CpiHandleMut::without_borrow_check(account).with_post_invoke_hook(
+            Self::post_cpi_revalidate_hook,
+            self_ptr.cast(),
+        ))
     }
 }
 

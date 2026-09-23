@@ -73,7 +73,9 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
 
     /// Invoke the CPI with the given instruction data. Collects accounts
     /// from [`ToCpiAccounts`], appends remaining accounts, validates borrow
-    /// state, then calls `invoke_signed_unchecked`.
+    /// state, then calls `invoke_signed_unchecked`. Mutable zero-copy account
+    /// handles are revalidated after the callee returns, before this method
+    /// returns to the caller.
     pub fn invoke(&self, data: &[u8]) -> ProgramResult {
         let mut instruction_accounts = self.accounts.to_instruction_accounts();
         let mut handles = self.accounts.to_cpi_handles();
@@ -154,6 +156,9 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
                 &signers,
             );
         }
+
+        drop(_borrow_guards);
+        crate::run_post_invoke_hooks(&handles)?;
 
         Ok(())
     }

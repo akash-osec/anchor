@@ -159,6 +159,9 @@ pub unsafe fn invoke_signed_unchecked_with_optional_sentinels<'a, 'seeds>(
         );
     }
 
+    drop(_borrow_guards);
+    crate::run_post_invoke_hooks(account_handles)?;
+
     Ok(())
 }
 
