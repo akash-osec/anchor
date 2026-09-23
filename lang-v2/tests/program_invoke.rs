@@ -576,6 +576,28 @@ fn cpi_context_invoke_accepts_mutable_slab_handle() {
 }
 
 #[test]
+fn cpi_context_revalidates_mutable_slab_handle_after_cpi() {
+    let program = ID;
+    let buffer = slab_account_view([1; 32], true, 9);
+    let view = unsafe { buffer.view() };
+    let mut acct = unsafe { Account::<PodCounter>::load_mut(view) }.unwrap();
+    let accounts = WritableCpi {
+        account: acct.cpi_handle_mut(),
+    };
+
+    // Simulate the callee changing the account owner while the CPI handle is
+    // live. The post-CPI hook must reject the stale zero-copy wrapper before
+    // the caller can continue using it.
+    buffer.set_owner([0x24; 32]);
+
+    let err = CpiContext::new(&program, accounts)
+        .invoke(&[1, 2, 3])
+        .unwrap_err();
+
+    assert_eq!(err, ProgramError::IllegalOwner);
+}
+
+#[test]
 fn cpi_context_invoke_accepts_readonly_slab_handle_from_mutable_wrapper() {
     let program = ID;
     let buffer = slab_account_view([1; 32], true, 9);
