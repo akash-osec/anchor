@@ -52,6 +52,11 @@ pub struct NestedPod {
     pub value: u64,
 }
 
+#[derive(Clone, Copy, IdlType)]
+pub struct NestedPodContainer {
+    pub nested: NestedPod,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, IdlType)]
 pub struct PlainReprC {
