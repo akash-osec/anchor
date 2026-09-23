@@ -304,6 +304,38 @@ fn test_cpi_noop_no_args() {
     assert_eq!(stored, 7, "noop must leave value untouched");
 }
 
+/// A callee can close or otherwise invalidate an account while the caller's
+/// zero-copy wrapper is still live. Safe CPI must revalidate that wrapper
+/// before the caller continues with stale metadata and pointers.
+#[test]
+fn test_cpi_rejects_closed_zero_copy_account() {
+    let (mut svm, payer) = setup();
+    let authority = keypair_for("authority");
+    let receiver = keypair_for("receiver");
+    svm.airdrop(&authority.pubkey(), 1_000_000_000).unwrap();
+    svm.airdrop(&receiver.pubkey(), 1_000_000_000).unwrap();
+    let data_pda = init_data_account(&mut svm, &payer, &authority);
+
+    let proxy_close = caller::instruction::ProxyClose {}.data();
+    let proxy_metas = vec![
+        AccountMeta::new(data_pda, false),
+        AccountMeta::new(receiver.pubkey(), false),
+        AccountMeta::new_readonly(callee_id(), false),
+    ];
+    let result = call_raw(&mut svm, caller_id(), proxy_close, proxy_metas, &payer, &[]);
+    assert!(
+        result.is_err(),
+        "CPI must reject the closed zero-copy account"
+    );
+
+    // The failed transaction is rolled back, so the account remains usable.
+    let account = svm
+        .get_account(&data_pda)
+        .expect("data account should remain after rollback");
+    assert_eq!(account.owner, callee_id());
+    assert!(!account.data.is_empty());
+}
+
 /// Drives every `InstructionAccount` ctor branch (`writable_signer`,
 /// `writable`, `readonly_signer`, `readonly`) in the auto-generated
 /// `ToCpiAccounts` impl by routing a CPI through `callee::cpi::touch`.

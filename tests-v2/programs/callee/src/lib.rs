@@ -37,6 +37,13 @@ pub mod callee {
         Ok(())
     }
 
+    /// Closes the data account during a CPI. The caller must reject its live
+    /// zero-copy wrapper before using it after this metadata change.
+    pub fn close_data(ctx: &mut Context<CloseData>) -> Result<()> {
+        ctx.accounts.data.close(*ctx.accounts.receiver.account())?;
+        Ok(())
+    }
+
     /// Zero-account handler — drives the empty-fields branch of the cpi
     /// accounts codegen, where `'a` has no `CpiHandle` field to anchor it
     /// and would otherwise fail E0392.
@@ -85,6 +92,14 @@ pub struct SetData {
 /// fallback in the auto-generated `__cpi_accounts_empty` module.
 #[derive(Accounts)]
 pub struct Empty {}
+
+#[derive(Accounts)]
+pub struct CloseData {
+    #[account(mut)]
+    pub data: Account<DataAccount>,
+    #[account(mut)]
+    pub receiver: UncheckedAccount,
+}
 
 /// Mixes one of each writable/signer combination so the cpi-accounts
 /// codegen has to emit each `InstructionAccount` ctor variant.

@@ -61,6 +61,17 @@ pub mod caller {
         Ok(())
     }
 
+    /// CPIs into a callee that closes the account represented by the live
+    /// zero-copy wrapper. The post-CPI hook must reject that stale wrapper.
+    pub fn proxy_close(ctx: &mut Context<ProxyClose>) -> Result<()> {
+        let cpi_accounts = callee::cpi::accounts::CloseData {
+            data: ctx.accounts.callee_data.cpi_handle_mut(),
+            receiver: ctx.accounts.receiver.cpi_handle_mut(),
+        };
+        let cpi_ctx = CpiContext::new(ctx.accounts.callee_program.address(), cpi_accounts);
+        callee::cpi::close_data(cpi_ctx)
+    }
+
     /// CPIs into the zero-account `empty` handler. Constructs the
     /// auto-generated `cpi::accounts::Empty` via its `new()` ctor — the
     /// only viable route since the lifetime-anchoring `_phantom` field
@@ -103,6 +114,15 @@ pub struct ProxySetData {
 
 #[derive(Accounts)]
 pub struct ProxyEmpty {
+    pub callee_program: UncheckedAccount,
+}
+
+#[derive(Accounts)]
+pub struct ProxyClose {
+    #[account(mut)]
+    pub callee_data: Account<CalleeData>,
+    #[account(mut)]
+    pub receiver: UncheckedAccount,
     pub callee_program: UncheckedAccount,
 }
 
