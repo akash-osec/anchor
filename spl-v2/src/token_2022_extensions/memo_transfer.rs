@@ -1,6 +1,6 @@
 use {
     super::common::validate_token_2022_program,
-    crate::{token_2022::spl_token_2022, token_shared::signer_addresses},
+    crate::{token_2022::spl_token_2022, token_shared::add_signers},
     anchor_lang::{CpiContext, CpiHandle, CpiHandleMut, ToCpiAccounts},
     solana_program_error::ProgramError,
 };
@@ -19,13 +19,14 @@ pub fn memo_transfer_initialize<'a>(
 ) -> Result<(), ProgramError> {
     validate_token_2022_program(ctx.program)?;
     let program = *ctx.program;
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::extension::memo_transfer::instruction::enable_required_transfer_memos(
-        &program,
-        ctx.accounts.account.address(),
-        ctx.accounts.owner.address(),
-        &signer_addresses,
-    )?;
+    let mut ix =
+        spl_token_2022::extension::memo_transfer::instruction::enable_required_transfer_memos(
+            &program,
+            ctx.accounts.account.address(),
+            ctx.accounts.owner.address(),
+            &[],
+        )?;
+    add_signers(&mut ix, 1, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
@@ -34,13 +35,13 @@ pub fn memo_transfer_disable<'a>(
 ) -> Result<(), ProgramError> {
     validate_token_2022_program(ctx.program)?;
     let program = *ctx.program;
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix =
+    let mut ix =
         spl_token_2022::extension::memo_transfer::instruction::disable_required_transfer_memos(
             &program,
             ctx.accounts.account.address(),
             ctx.accounts.owner.address(),
-            &signer_addresses,
+            &[],
         )?;
+    add_signers(&mut ix, 1, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }

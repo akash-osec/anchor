@@ -9,17 +9,34 @@ extern crate alloc;
 #[cfg(feature = "guardrails")]
 use anchor_lang::{require, Id};
 use {
-    alloc::vec::Vec,
     anchor_lang::{CpiContext, CpiHandle, CpiHandleMut, ToCpiAccounts},
     pinocchio::address::Address,
+    solana_instruction::{AccountMeta, Instruction},
     solana_program_error::ProgramError,
     spl_token_2022_interface as spl_token_2022,
 };
 
-/// SPL Token encodes a multisig authority by marking the authority account
-/// non-signer and appending each member signer to the instruction.
-pub(crate) fn signer_addresses<'a>(accounts: &[CpiHandle<'a>]) -> Vec<&'a Address> {
-    accounts.iter().map(CpiHandle::address).collect()
+/// Add explicit signer accounts after the authority account without creating
+/// a temporary `Vec<&Address>`. SPL instruction builders currently accept that
+/// temporary representation, so the instruction is built with no signers and
+/// its account metas are completed here instead.
+pub(crate) fn add_signers(
+    instruction: &mut Instruction,
+    authority_index: usize,
+    signers: &[CpiHandle<'_>],
+) {
+    if signers.is_empty() {
+        return;
+    }
+
+    instruction.accounts[authority_index].is_signer = false;
+    instruction.accounts.reserve(signers.len());
+    instruction.accounts.splice(
+        authority_index + 1..authority_index + 1,
+        signers
+            .iter()
+            .map(|signer| AccountMeta::new_readonly(*signer.address(), true)),
+    );
 }
 
 #[cfg(feature = "guardrails")]
@@ -268,16 +285,16 @@ pub fn initialize_mint2<'a>(
 }
 
 pub fn transfer<'a>(ctx: CpiContext<'a, Transfer<'a>>, amount: u64) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
     #[allow(deprecated)]
-    let ix = spl_token_2022::instruction::transfer(
+    let mut ix = spl_token_2022::instruction::transfer(
         ctx.program,
         ctx.accounts.from.address(),
         ctx.accounts.to.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
+        &[],
         amount,
     )?;
+    add_signers(&mut ix, 2, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
@@ -286,30 +303,30 @@ pub fn transfer_checked<'a>(
     amount: u64,
     decimals: u8,
 ) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::instruction::transfer_checked(
+    let mut ix = spl_token_2022::instruction::transfer_checked(
         ctx.program,
         ctx.accounts.from.address(),
         ctx.accounts.mint.address(),
         ctx.accounts.to.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
+        &[],
         amount,
         decimals,
     )?;
+    add_signers(&mut ix, 3, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
 pub fn mint_to<'a>(ctx: CpiContext<'a, MintTo<'a>>, amount: u64) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::instruction::mint_to(
+    let mut ix = spl_token_2022::instruction::mint_to(
         ctx.program,
         ctx.accounts.mint.address(),
         ctx.accounts.to.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
+        &[],
         amount,
     )?;
+    add_signers(&mut ix, 2, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
@@ -318,29 +335,29 @@ pub fn mint_to_checked<'a>(
     amount: u64,
     decimals: u8,
 ) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::instruction::mint_to_checked(
+    let mut ix = spl_token_2022::instruction::mint_to_checked(
         ctx.program,
         ctx.accounts.mint.address(),
         ctx.accounts.to.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
+        &[],
         amount,
         decimals,
     )?;
+    add_signers(&mut ix, 2, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
 pub fn burn<'a>(ctx: CpiContext<'a, Burn<'a>>, amount: u64) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::instruction::burn(
+    let mut ix = spl_token_2022::instruction::burn(
         ctx.program,
         ctx.accounts.from.address(),
         ctx.accounts.mint.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
+        &[],
         amount,
     )?;
+    add_signers(&mut ix, 2, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
@@ -349,29 +366,29 @@ pub fn burn_checked<'a>(
     amount: u64,
     decimals: u8,
 ) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::instruction::burn_checked(
+    let mut ix = spl_token_2022::instruction::burn_checked(
         ctx.program,
         ctx.accounts.from.address(),
         ctx.accounts.mint.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
+        &[],
         amount,
         decimals,
     )?;
+    add_signers(&mut ix, 2, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
 pub fn approve<'a>(ctx: CpiContext<'a, Approve<'a>>, amount: u64) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::instruction::approve(
+    let mut ix = spl_token_2022::instruction::approve(
         ctx.program,
         ctx.accounts.to.address(),
         ctx.accounts.delegate.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
+        &[],
         amount,
     )?;
+    add_signers(&mut ix, 2, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
@@ -380,28 +397,28 @@ pub fn approve_checked<'a>(
     amount: u64,
     decimals: u8,
 ) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::instruction::approve_checked(
+    let mut ix = spl_token_2022::instruction::approve_checked(
         ctx.program,
         ctx.accounts.to.address(),
         ctx.accounts.mint.address(),
         ctx.accounts.delegate.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
+        &[],
         amount,
         decimals,
     )?;
+    add_signers(&mut ix, 3, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
 pub fn revoke<'a>(ctx: CpiContext<'a, Revoke<'a>>) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::instruction::revoke(
+    let mut ix = spl_token_2022::instruction::revoke(
         ctx.program,
         ctx.accounts.source.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
+        &[],
     )?;
+    add_signers(&mut ix, 1, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
@@ -410,51 +427,51 @@ pub fn set_authority<'a>(
     authority_type: spl_token_2022::instruction::AuthorityType,
     new_authority: Option<&Address>,
 ) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::instruction::set_authority(
+    let mut ix = spl_token_2022::instruction::set_authority(
         ctx.program,
         ctx.accounts.account_or_mint.address(),
         new_authority,
         authority_type,
         ctx.accounts.current_authority.address(),
-        &signer_addresses,
+        &[],
     )?;
+    add_signers(&mut ix, 1, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
 pub fn close_account<'a>(ctx: CpiContext<'a, CloseAccount<'a>>) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::instruction::close_account(
+    let mut ix = spl_token_2022::instruction::close_account(
         ctx.program,
         ctx.accounts.account.address(),
         ctx.accounts.destination.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
+        &[],
     )?;
+    add_signers(&mut ix, 2, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
 pub fn freeze_account<'a>(ctx: CpiContext<'a, FreezeAccount<'a>>) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::instruction::freeze_account(
+    let mut ix = spl_token_2022::instruction::freeze_account(
         ctx.program,
         ctx.accounts.account.address(),
         ctx.accounts.mint.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
+        &[],
     )?;
+    add_signers(&mut ix, 2, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
 pub fn thaw_account<'a>(ctx: CpiContext<'a, ThawAccount<'a>>) -> Result<(), ProgramError> {
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = spl_token_2022::instruction::thaw_account(
+    let mut ix = spl_token_2022::instruction::thaw_account(
         ctx.program,
         ctx.accounts.account.address(),
         ctx.accounts.mint.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
+        &[],
     )?;
+    add_signers(&mut ix, 2, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
@@ -466,6 +483,7 @@ pub fn sync_native<'a>(ctx: CpiContext<'a, SyncNative<'a>>) -> Result<(), Progra
 #[cfg(test)]
 mod tests {
     use {
+        alloc::vec,
         super::*,
         anchor_lang::{
             programs::Token,
@@ -490,18 +508,17 @@ mod tests {
             CpiHandle::readonly(&member_one_view),
             CpiHandle::readonly(&member_two_view),
         ];
-        let signer_addresses = signer_addresses(&handles);
-
         #[allow(deprecated)]
-        let ix = spl_token_2022::instruction::transfer(
+        let mut ix = spl_token_2022::instruction::transfer(
             &Token::id(),
             &Address::new_from_array([1; 32]),
             &Address::new_from_array([2; 32]),
             &Address::new_from_array([3; 32]),
-            &signer_addresses,
+            &[],
             7,
         )
         .unwrap();
+        add_signers(&mut ix, 2, &handles);
 
         assert_eq!(ix.accounts.len(), 5);
         assert!(
@@ -512,6 +529,35 @@ mod tests {
         assert!(ix.accounts[4].is_signer);
         assert_eq!(ix.accounts[3].pubkey.as_ref(), [4; 32].as_slice());
         assert_eq!(ix.accounts[4].pubkey.as_ref(), [5; 32].as_slice());
+    }
+
+    #[test]
+    fn signer_metas_are_inserted_before_trailing_accounts() {
+        let member = signer([4; 32]);
+        let member_view = unsafe { member.view() };
+        let member_handle = CpiHandle::readonly(&member_view);
+
+        let mint = Address::new_from_array([1; 32]);
+        let authority = Address::new_from_array([2; 32]);
+        let trailing = Address::new_from_array([3; 32]);
+        let mut ix = Instruction {
+            program_id: Token::id(),
+            accounts: vec![
+                AccountMeta::new(mint, false),
+                AccountMeta::new_readonly(authority, true),
+                AccountMeta::new_readonly(trailing, false),
+            ],
+            data: vec![],
+        };
+
+        add_signers(&mut ix, 1, &[member_handle]);
+
+        assert_eq!(ix.accounts.len(), 4);
+        assert_eq!(ix.accounts[1].pubkey, authority);
+        assert!(!ix.accounts[1].is_signer);
+        assert_eq!(ix.accounts[2].pubkey, member_handle.address().clone());
+        assert!(ix.accounts[2].is_signer);
+        assert_eq!(ix.accounts[3].pubkey, trailing);
     }
 
     #[test]

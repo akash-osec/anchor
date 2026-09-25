@@ -1,6 +1,6 @@
 use {
     super::common::validate_token_2022_program,
-    crate::{token_2022::spl_token_2022, token_shared::signer_addresses},
+    crate::{token_2022::spl_token_2022, token_shared::add_signers},
     anchor_lang::{CpiContext, CpiHandle, CpiHandleMut, ToCpiAccounts},
     pinocchio::address::Address,
     solana_instruction::Instruction,
@@ -41,14 +41,13 @@ pub fn group_pointer_update<'a>(
     group_address: Option<&Address>,
 ) -> Result<(), ProgramError> {
     validate_token_2022_program(ctx.program)?;
-    let signer_addresses = signer_addresses(ctx.accounts.signers);
-    let ix = group_pointer_update_ix(
+    let mut ix = group_pointer_update_ix(
         ctx.program,
         ctx.accounts.mint.address(),
         ctx.accounts.authority.address(),
-        &signer_addresses,
         group_address,
     )?;
+    add_signers(&mut ix, 1, ctx.accounts.signers);
     ctx.invoke_ix(ix)
 }
 
@@ -56,14 +55,13 @@ fn group_pointer_update_ix(
     program: &Address,
     mint: &Address,
     authority: &Address,
-    signer_addresses: &[&Address],
     group_address: Option<&Address>,
 ) -> Result<Instruction, ProgramError> {
     spl_token_2022::extension::group_pointer::instruction::update(
         program,
         mint,
         authority,
-        signer_addresses,
+        &[],
         group_address.copied(),
     )
 }
@@ -96,7 +94,7 @@ mod tests {
         let authority = Address::new_from_array([2; 32]);
         let group = Address::new_from_array([3; 32]);
 
-        let ix = group_pointer_update_ix(&program, &mint, &authority, &[], Some(&group))
+        let ix = group_pointer_update_ix(&program, &mint, &authority, Some(&group))
             .expect("group pointer update ix should build");
         assert_eq!(ix.accounts.len(), 2);
         assert!(ix.accounts[0].is_writable);
