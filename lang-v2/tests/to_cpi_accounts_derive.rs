@@ -188,9 +188,13 @@ fn derive_to_cpi_accounts_duplicate_readonly_erases_handle_mut() {
 
 #[test]
 fn derive_to_cpi_accounts_expands_signer_handle_slices() {
-    let authority_buffer = account([8; 32], true, false);
-    let signer_one_buffer = account([9; 32], true, false);
-    let signer_two_buffer = account([10; 32], true, false);
+    const AUTHORITY_ADDRESS: [u8; 32] = [8; 32];
+    const SIGNER_ONE_ADDRESS: [u8; 32] = [9; 32];
+    const SIGNER_TWO_ADDRESS: [u8; 32] = [10; 32];
+
+    let authority_buffer = account(AUTHORITY_ADDRESS, true, false);
+    let signer_one_buffer = account(SIGNER_ONE_ADDRESS, true, false);
+    let signer_two_buffer = account(SIGNER_TWO_ADDRESS, true, false);
     let authority_view = unsafe { authority_buffer.view() };
     let signer_one_view = unsafe { signer_one_buffer.view() };
     let signer_two_view = unsafe { signer_two_buffer.view() };
@@ -212,8 +216,14 @@ fn derive_to_cpi_accounts_expands_signer_handle_slices() {
 
     let handles = accounts.to_cpi_handles();
     assert_eq!(handles.len(), 3);
-    assert_eq!(*handles[1].address(), Address::new_from_array([9; 32]));
-    assert_eq!(*handles[2].address(), Address::new_from_array([10; 32]));
+    assert_eq!(
+        *handles[1].address(),
+        Address::new_from_array(SIGNER_ONE_ADDRESS)
+    );
+    assert_eq!(
+        *handles[2].address(),
+        Address::new_from_array(SIGNER_TWO_ADDRESS)
+    );
     assert_eq!(accounts.optional_account_sentinel_flags(), vec![false; 3]);
 
     let single = SignerSliceCpi {
