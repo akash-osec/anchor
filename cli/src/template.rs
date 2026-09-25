@@ -1128,7 +1128,6 @@ fn ts_package_json_v1(jest: bool, license: String) -> String {
   "devDependencies": {{
     "chai": "^4.3.4",
     "mocha": "^9.0.3",
-    "ts-mocha": "^10.0.0",
     "@types/bn.js": "^5.1.0",
     "@types/chai": "^4.3.0",
     "@types/mocha": "^9.0.0",
@@ -1191,8 +1190,6 @@ fn ts_package_json_v2(jest: bool, license: String) -> String {
   "devDependencies": {{
     "chai": "^4.5.0",
     "mocha": "^11.7.5",
-    "ts-mocha": "^11.1.0",
-    "ts-node": "^10.9.2",
     "@types/bn.js": "^5.2.0",
     "@types/chai": "^4.3.0",
     "@types/mocha": "^10.0.10",
@@ -1500,7 +1497,7 @@ impl TestTemplate {
                     format!("{pkg_manager_exec_cmd} mocha -t 1000000 tests/")
                 } else {
                     format!(
-                        r#"{pkg_manager_exec_cmd} ts-mocha -p ./tsconfig.json -t 1000000 "tests/**/*.ts""#
+                        r#"{pkg_manager_exec_cmd} mocha --import=tsx -t 1000000 "tests/**/*.ts""#
                     )
                 }
             }
