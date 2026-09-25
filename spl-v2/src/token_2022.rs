@@ -3,7 +3,7 @@
 extern crate alloc;
 
 use {
-    crate::token_shared::multisig_signer_addresses,
+    crate::token_shared::signer_addresses,
     alloc::{string::String, vec::Vec},
     anchor_lang::{require_eq, CpiContext, CpiHandle, CpiHandleMut, ToCpiAccounts},
     pinocchio::address::Address,
@@ -55,16 +55,20 @@ pub struct Reallocate<'a> {
     #[signer]
     pub payer: CpiHandleMut<'a>,
     pub system_program: CpiHandle<'a>,
-    #[signer]
+    #[signer(self.signers.is_empty())]
     pub authority: CpiHandle<'a>,
+    #[signer]
+    pub signers: &'a [CpiHandle<'a>],
 }
 
 #[derive(ToCpiAccounts)]
 pub struct WithdrawExcessLamports<'a> {
     pub source: CpiHandleMut<'a>,
     pub destination: CpiHandleMut<'a>,
-    #[signer]
+    #[signer(self.signers.is_empty())]
     pub authority: CpiHandle<'a>,
+    #[signer]
+    pub signers: &'a [CpiHandle<'a>],
 }
 
 #[derive(ToCpiAccounts)]
@@ -172,7 +176,7 @@ pub fn reallocate<'a>(
     ctx: CpiContext<'a, Reallocate<'a>>,
     extension_types: &[ExtensionType],
 ) -> Result<(), ProgramError> {
-    let signer_addresses = multisig_signer_addresses(&ctx.remaining_accounts);
+    let signer_addresses = signer_addresses(ctx.accounts.signers);
     let ix = spl_token_2022::instruction::reallocate(
         ctx.program,
         ctx.accounts.account.address(),
@@ -187,7 +191,7 @@ pub fn reallocate<'a>(
 pub fn withdraw_excess_lamports<'a>(
     ctx: CpiContext<'a, WithdrawExcessLamports<'a>>,
 ) -> Result<(), ProgramError> {
-    let signer_addresses = multisig_signer_addresses(&ctx.remaining_accounts);
+    let signer_addresses = signer_addresses(ctx.accounts.signers);
     let ix = spl_token_2022::instruction::withdraw_excess_lamports(
         ctx.program,
         ctx.accounts.source.address(),

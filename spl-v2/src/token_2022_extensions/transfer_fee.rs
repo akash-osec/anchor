@@ -1,6 +1,6 @@
 use {
     super::common::{pubkey_refs, validate_token_2022_program},
-    crate::{token_2022::spl_token_2022, token_shared::multisig_signer_addresses},
+    crate::{token_2022::spl_token_2022, token_shared::signer_addresses},
     alloc::vec::Vec,
     anchor_lang::{CpiContext, CpiHandle, CpiHandleMut, ToCpiAccounts},
     pinocchio::address::Address,
@@ -16,8 +16,10 @@ pub struct TransferFeeInitialize<'a> {
 #[derive(ToCpiAccounts)]
 pub struct TransferFeeSetTransferFee<'a> {
     pub mint: CpiHandleMut<'a>,
-    #[signer]
+    #[signer(self.signers.is_empty())]
     pub authority: CpiHandle<'a>,
+    #[signer]
+    pub signers: &'a [CpiHandle<'a>],
 }
 
 #[derive(ToCpiAccounts)]
@@ -25,8 +27,10 @@ pub struct TransferCheckedWithFee<'a> {
     pub source: CpiHandleMut<'a>,
     pub mint: CpiHandle<'a>,
     pub destination: CpiHandleMut<'a>,
-    #[signer]
+    #[signer(self.signers.is_empty())]
     pub authority: CpiHandle<'a>,
+    #[signer]
+    pub signers: &'a [CpiHandle<'a>],
 }
 
 #[derive(ToCpiAccounts)]
@@ -38,16 +42,20 @@ pub struct HarvestWithheldTokensToMint<'a> {
 pub struct WithdrawWithheldTokensFromMint<'a> {
     pub mint: CpiHandleMut<'a>,
     pub destination: CpiHandleMut<'a>,
-    #[signer]
+    #[signer(self.signers.is_empty())]
     pub authority: CpiHandle<'a>,
+    #[signer]
+    pub signers: &'a [CpiHandle<'a>],
 }
 
 #[derive(ToCpiAccounts)]
 pub struct WithdrawWithheldTokensFromAccounts<'a> {
     pub mint: CpiHandle<'a>,
     pub destination: CpiHandleMut<'a>,
-    #[signer]
+    #[signer(self.signers.is_empty())]
     pub authority: CpiHandle<'a>,
+    #[signer]
+    pub signers: &'a [CpiHandle<'a>],
 }
 
 pub fn transfer_fee_initialize<'a>(
@@ -79,7 +87,7 @@ pub fn transfer_fee_set<'a>(
 ) -> Result<(), ProgramError> {
     validate_token_2022_program(ctx.program)?;
     let program = *ctx.program;
-    let signer_addresses = multisig_signer_addresses(&ctx.remaining_accounts);
+    let signer_addresses = signer_addresses(ctx.accounts.signers);
     let ix = spl_token_2022::extension::transfer_fee::instruction::set_transfer_fee(
         &program,
         ctx.accounts.mint.address(),
@@ -99,7 +107,7 @@ pub fn transfer_checked_with_fee<'a>(
 ) -> Result<(), ProgramError> {
     validate_token_2022_program(ctx.program)?;
     let program = *ctx.program;
-    let signer_addresses = multisig_signer_addresses(&ctx.remaining_accounts);
+    let signer_addresses = signer_addresses(ctx.accounts.signers);
     let ix = spl_token_2022::extension::transfer_fee::instruction::transfer_checked_with_fee(
         &program,
         ctx.accounts.source.address(),
@@ -138,7 +146,7 @@ pub fn withdraw_withheld_tokens_from_mint<'a>(
 ) -> Result<(), ProgramError> {
     validate_token_2022_program(ctx.program)?;
     let program = *ctx.program;
-    let signer_addresses = multisig_signer_addresses(&ctx.remaining_accounts);
+    let signer_addresses = signer_addresses(ctx.accounts.signers);
     let ix =
         spl_token_2022::extension::transfer_fee::instruction::withdraw_withheld_tokens_from_mint(
             &program,
@@ -156,7 +164,7 @@ pub fn withdraw_withheld_tokens_from_accounts<'a>(
 ) -> Result<(), ProgramError> {
     validate_token_2022_program(ctx.program)?;
     let program = *ctx.program;
-    let signer_addresses = multisig_signer_addresses(&ctx.remaining_accounts);
+    let signer_addresses = signer_addresses(ctx.accounts.signers);
     let source_pubkeys: Vec<Pubkey> = sources.iter().map(|source| *source.address()).collect();
     let source_refs = pubkey_refs(&source_pubkeys);
     let ix =

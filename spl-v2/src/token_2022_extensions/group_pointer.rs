@@ -1,6 +1,6 @@
 use {
     super::common::validate_token_2022_program,
-    crate::{token_2022::spl_token_2022, token_shared::multisig_signer_addresses},
+    crate::{token_2022::spl_token_2022, token_shared::signer_addresses},
     anchor_lang::{CpiContext, CpiHandle, CpiHandleMut, ToCpiAccounts},
     pinocchio::address::Address,
     solana_instruction::Instruction,
@@ -15,8 +15,10 @@ pub struct GroupPointerInitialize<'a> {
 #[derive(ToCpiAccounts)]
 pub struct GroupPointerUpdate<'a> {
     pub mint: CpiHandleMut<'a>,
-    #[signer]
+    #[signer(self.signers.is_empty())]
     pub authority: CpiHandle<'a>,
+    #[signer]
+    pub signers: &'a [CpiHandle<'a>],
 }
 
 pub fn group_pointer_initialize<'a>(
@@ -39,7 +41,7 @@ pub fn group_pointer_update<'a>(
     group_address: Option<&Address>,
 ) -> Result<(), ProgramError> {
     validate_token_2022_program(ctx.program)?;
-    let signer_addresses = multisig_signer_addresses(&ctx.remaining_accounts);
+    let signer_addresses = signer_addresses(ctx.accounts.signers);
     let ix = group_pointer_update_ix(
         ctx.program,
         ctx.accounts.mint.address(),
@@ -115,6 +117,7 @@ mod tests {
         let accounts = GroupPointerUpdate {
             mint: CpiHandleMut::writable(&mut mint_view),
             authority: CpiHandle::readonly(&authority_view),
+            signers: &[],
         };
 
         assert_eq!(accounts.to_cpi_handles().len(), 2);
