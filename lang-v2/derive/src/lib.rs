@@ -2963,6 +2963,7 @@ fn gen_declared_program(
     let mut account_group_variants =
         std::collections::BTreeMap::<String, Vec<DeclareAccountGroupVariant>>::new();
     let mut handlers = Vec::new();
+    let mut interface_borsh_compatibility_asserts = Vec::new();
     for ix in instructions {
         let ix_name = json_str(ix, "name", name.span())?;
         let ix_ident = Ident::new(&to_snake_case(ix_name), name.span());
@@ -3015,14 +3016,51 @@ fn gen_declared_program(
                 )
             })?;
             let ty = declare_idl_type_to_tokens(ty_value, name.span())?;
+            let ty_syn: Type = syn::parse2(ty.clone()).map_err(|err| {
+                syn::Error::new(
+                    name.span(),
+                    format!("failed to parse instruction argument type `{ty}`: {err}"),
+                )
+            })?;
+            interface_borsh_compatibility_asserts.push(
+                borsh_compatibility_assert_for_type(
+                    &ty_syn,
+                    &quote!(anchor_lang::__private::BorshSerializeCompatible),
+                ),
+            );
+            interface_borsh_compatibility_asserts.push(
+                borsh_compatibility_assert_for_type(
+                    &ty_syn,
+                    &quote!(anchor_lang::__private::BorshDeserializeCompatible),
+                ),
+            );
             arg_decls.push(quote! { #arg_ident: #ty });
             arg_uses.push(quote! { let _ = #arg_ident; });
         }
-        let return_ty = ix
-            .get("returns")
-            .map(|ty| declare_idl_type_to_tokens(ty, name.span()))
-            .transpose()?
-            .unwrap_or_else(|| quote! { () });
+        let return_ty = if let Some(returns) = ix.get("returns") {
+            let return_ty = declare_idl_type_to_tokens(returns, name.span())?;
+            let return_ty_syn: Type = syn::parse2(return_ty.clone()).map_err(|err| {
+                syn::Error::new(
+                    name.span(),
+                    format!("failed to parse instruction return type `{return_ty}`: {err}"),
+                )
+            })?;
+            interface_borsh_compatibility_asserts.push(
+                borsh_compatibility_assert_for_type(
+                    &return_ty_syn,
+                    &quote!(anchor_lang::__private::BorshSerializeCompatible),
+                ),
+            );
+            interface_borsh_compatibility_asserts.push(
+                borsh_compatibility_assert_for_type(
+                    &return_ty_syn,
+                    &quote!(anchor_lang::__private::BorshDeserializeCompatible),
+                ),
+            );
+            return_ty
+        } else {
+            quote! { () }
+        };
 
         handlers.push(quote! {
             #[discrim = [#(#discrim_tokens),*]]
@@ -3070,6 +3108,7 @@ fn gen_declared_program(
             }
 
             #(#types)*
+            #(#interface_borsh_compatibility_asserts)*
             pub mod types {
                 #(#type_reexports)*
             }
