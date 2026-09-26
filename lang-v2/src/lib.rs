@@ -393,6 +393,21 @@ pub mod __private {
     impl<T: BorshDeserializeCompatible> BorshDeserializeCompatible for alloc::vec::Vec<T> {
         type Fields = <T as BorshDeserializeCompatible>::Fields;
     }
+    impl<K, V> BorshSerializeCompatible for alloc::collections::BTreeMap<K, V>
+    where
+        K: BorshSerializeCompatible,
+        V: BorshSerializeCompatible,
+    {
+        type Fields = BorshSerializeFields<K, BorshSerializeFields<V, BorshSerializeFieldsEnd>>;
+    }
+    impl<K, V> BorshDeserializeCompatible for alloc::collections::BTreeMap<K, V>
+    where
+        K: BorshDeserializeCompatible,
+        V: BorshDeserializeCompatible,
+    {
+        type Fields =
+            BorshDeserializeFields<K, BorshDeserializeFields<V, BorshDeserializeFieldsEnd>>;
+    }
     impl<T: BorshSerializeCompatible> BorshSerializeCompatible for [T] {
         type Fields = <T as BorshSerializeCompatible>::Fields;
     }
