@@ -800,6 +800,120 @@ pub struct Price {
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
+fn declared_program_rejects_external_float_instruction_types() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let idl_path = manifest_dir.join("target/idls/external_float.json");
+    fs::create_dir_all(idl_path.parent().unwrap()).unwrap();
+    fs::write(
+        &idl_path,
+        r#"{
+  "address": "11111111111111111111111111111111",
+  "metadata": {
+    "name": "external_float",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "useExternal",
+      "discriminator": [1, 2, 3, 4],
+      "accounts": [],
+      "args": [
+        {
+          "name": "value",
+          "type": { "defined": { "name": "ExternalFloat" } }
+        }
+      ]
+    }
+  ],
+  "types": []
+}"#,
+    )
+    .unwrap();
+
+    let output = cargo_case(
+        "declared_program_external_float",
+        r#"
+use anchor_lang::prelude::*;
+
+mod external_types {
+    pub type ExternalFloat = f64;
+}
+
+use external_types::ExternalFloat;
+
+declare_program!(external_float);
+"#,
+        "check",
+        &[],
+    );
+    fs::remove_file(idl_path).unwrap();
+
+    assert!(
+        !output.status.success(),
+        "declared program with an external float type unexpectedly compiled successfully"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("BorshSerializeCompatible")
+            || stderr.contains("BorshDeserializeCompatible"),
+        "declared program diagnostics did not identify the Borsh compatibility proof:\n\n{stderr}"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn nested_float_aliases_are_rejected_on_borsh_accounts() {
+    compile_pass_case(
+        "nested_safe_borsh_account",
+        r#"
+use anchor_lang::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct SafeInner {
+    pub value: u64,
+}
+
+#[account(borsh)]
+pub struct SafeAccount {
+    pub value: SafeInner,
+}
+"#,
+    );
+
+    compile_fail_case(
+        "nested_float_alias_borsh_account",
+        r#"
+use anchor_lang::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+type FloatAlias = f64;
+
+#[derive(AnchorSerialize, AnchorDeserialize)]
+pub struct HiddenFloat {
+    pub value: FloatAlias,
+}
+
+#[account(borsh)]
+pub struct Price {
+    pub value: HiddenFloat,
+}
+"#,
+        &["BorshSerializeCompatible", "BorshDeserializeCompatible"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
 fn cfg_gated_public_handlers_do_not_emit_missing_wrappers() {
     compile_pass_case(
         "cfg_gated_handler",
