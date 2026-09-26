@@ -93,6 +93,38 @@ fn compile_pass_case(name: &str, source: &str) {
     );
 }
 
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn btree_map_instruction_arguments_remain_supported() {
+    compile_pass_case(
+        "btree_map_instruction_arguments",
+        r#"
+extern crate alloc;
+
+use alloc::collections::BTreeMap;
+use anchor_lang::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[derive(Accounts)]
+pub struct Noop {}
+
+#[program]
+pub mod btree_map_instruction_arg {
+    use super::*;
+
+    pub fn set(_ctx: &mut Context<Noop>, value: BTreeMap<u8, u16>) -> Result<()> {
+        let _ = value;
+        Ok(())
+    }
+}
+"#,
+    );
+}
+
 fn cargo_test_pass_case(name: &str, source: &str, features: &[&str]) {
     let mut args = Vec::new();
     if !features.is_empty() {
