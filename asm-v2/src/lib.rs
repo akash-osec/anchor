@@ -10,6 +10,9 @@
 //!
 //! ```toml
 //! # Cargo.toml
+//! [dependencies]
+//! anchor-asm-v2-runtime = { path = "..." }
+//!
 //! [build-dependencies]
 //! anchor-asm-v2 = { path = "..." }
 //! ```
@@ -27,7 +30,7 @@
 //! #![no_main]
 //! #![feature(asm_experimental_arch)]
 //!
-//! anchor_asm_v2::include_asm!();
+//! anchor_asm_v2_runtime::include_asm!();
 //!
 //! #[panic_handler]
 //! fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
@@ -35,7 +38,8 @@
 //!
 //! `build()` walks the assembly directory, expands `.include` directives,
 //! and writes `$OUT_DIR/combined.s` plus a Rust wrapper containing
-//! `global_asm!` const operands. `include_asm!()` includes that wrapper.
+//! `global_asm!` const operands. The runtime crate's `include_asm!()` macro
+//! includes that wrapper from the program crate.
 //!
 //! ## Full mode — new programs with compile-time constants
 //!

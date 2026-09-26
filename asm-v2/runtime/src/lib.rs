@@ -7,13 +7,23 @@
 ///
 /// Call at crate root scope. Requires `#![feature(asm_experimental_arch)]`.
 ///
-/// ```ignore
+/// ```toml
+/// # Cargo.toml
+/// [dependencies]
+/// anchor-asm-v2-runtime = { path = "..." }
+///
+/// [build-dependencies]
+/// anchor-asm-v2 = { path = "..." }
+/// ```
+///
+/// ```rust,ignore
 /// // build.rs
 /// fn main() { anchor_asm_v2::build("src/asm"); }
 ///
 /// // lib.rs
+/// #![no_std]
 /// #![feature(asm_experimental_arch)]
-/// anchor_asm_v2::include_asm!();
+/// anchor_asm_v2_runtime::include_asm!();
 /// ```
 #[macro_export]
 macro_rules! include_asm {
