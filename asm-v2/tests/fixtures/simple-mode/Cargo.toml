@@ -1,0 +1,13 @@
+[package]
+name = "anchor-asm-v2-simple-mode-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+anchor-asm-v2-runtime = { path = "../../../runtime" }
+
+[build-dependencies]
+anchor-asm-v2 = { path = "../../.." }
