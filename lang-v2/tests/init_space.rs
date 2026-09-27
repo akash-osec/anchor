@@ -234,6 +234,20 @@ fn generic_parameters_named_like_builtins_use_space() {
 }
 
 #[derive(InitSpace)]
+struct NestedGenericAddress<Address: Space> {
+    _maybe: Option<Address>,
+    _array: [Address; 2],
+}
+
+#[test]
+fn nested_generic_parameters_use_space_recursively() {
+    assert_eq!(
+        NestedGenericAddress::<WideAddress>::INIT_SPACE,
+        (1 + WideAddress::INIT_SPACE) + 2 * WideAddress::INIT_SPACE
+    );
+}
+
+#[derive(InitSpace)]
 enum Variant {
     A,             // 0
     B(u8),         // 1
