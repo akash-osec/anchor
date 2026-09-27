@@ -3444,6 +3444,21 @@ mod tests {
     }
 
     #[test]
+    fn associated_token_update_constraints_are_rejected() {
+        let attrs: Vec<Attribute> = vec![syn::parse_quote!(
+            #[account(update(associated_token::mint = mint))]
+        )];
+        let err = match parse_account_attrs(&attrs) {
+            Ok(_) => panic!("associated_token update constraints must be rejected"),
+            Err(err) => err,
+        };
+        assert_eq!(
+            err.to_string(),
+            "`update(associated_token::...)` constraints are not supported"
+        );
+    }
+
+    #[test]
     fn seeds_program_without_seeds_is_rejected() {
         let attrs: Vec<Attribute> = vec![syn::parse_quote!(
             #[account(seeds::program = other_program.key())]
