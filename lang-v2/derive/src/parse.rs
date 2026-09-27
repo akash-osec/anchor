@@ -255,6 +255,12 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                         result.is_mut = true;
                         while !content.is_empty() {
                             let ns_ident: Ident = Ident::parse_any(&content)?;
+                            if ns_ident == "associated_token" {
+                                return Err(syn::Error::new(
+                                    ns_ident.span(),
+                                    "`update(associated_token::...)` constraints are not supported",
+                                ));
+                            }
                             content.parse::<Token![::]>()?;
                             let key_ident: Ident = Ident::parse_any(&content)?;
                             content.parse::<Token![=]>()?;
