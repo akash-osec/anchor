@@ -7010,7 +7010,7 @@ mod tests {
             ),
             (
                 syn::parse_quote! {
-                    #[cfg_attr(feature = "fast", inline(always))]
+                    #[cfg_attr(feature = "fast", inline(always), no_mangle)]
                     pub fn conditional_handler(ctx: &mut Context<MyAccounts>) -> Result<()> {
                         let _ = ctx;
                         Ok(())
@@ -7023,6 +7023,10 @@ mod tests {
                 .wrapper
                 .to_string();
             assert!(wrapper.contains(expected), "unexpected wrapper: {wrapper}");
+            assert!(
+                !wrapper.contains("no_mangle"),
+                "wrapper copied an unrelated attribute: {wrapper}"
+            );
         }
     }
 
