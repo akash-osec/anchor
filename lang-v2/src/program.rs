@@ -183,7 +183,10 @@ pub(crate) fn validate_fixed_instruction_accounts<'a, const N: usize>(
         }
 
         if enforce_signers && account.is_signer {
-            require!(handle.is_signer(), ProgramError::MissingRequiredSignature);
+            require!(
+                handle.account_view().is_signer(),
+                ProgramError::MissingRequiredSignature
+            );
         }
     }
 
@@ -219,7 +222,10 @@ pub(crate) fn validate_instruction_accounts<'a>(
         }
 
         if enforce_signers && account.is_signer {
-            require!(handle.is_signer(), ProgramError::MissingRequiredSignature);
+            require!(
+                handle.account_view().is_signer(),
+                ProgramError::MissingRequiredSignature
+            );
         }
     }
 
