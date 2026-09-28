@@ -1502,6 +1502,20 @@ mod tests {
         let vec_ty: Type = syn::parse_quote!(alloc::vec::Vec<alloc::string::String>);
         assert_eq!(rust_type_to_idl_value(&vec_ty), json!({ "vec": "string" }));
 
+        let set_ty: Type = syn::parse_quote!(alloc::collections::BTreeSet<models::Inner>);
+        assert_eq!(
+            rust_type_to_idl_value(&set_ty),
+            json!({
+                "defined": {
+                    "name": "BTreeSet",
+                    "generics": [{
+                        "kind": "type",
+                        "type": { "defined": { "name": "Inner" } },
+                    }],
+                }
+            })
+        );
+
         let bare_address_ty: Type = syn::parse_quote!(Address);
         assert_eq!(rust_type_to_idl_value(&bare_address_ty), json!("pubkey"));
 

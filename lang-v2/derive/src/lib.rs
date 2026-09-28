@@ -4834,6 +4834,8 @@ fn declare_idl_type_to_tokens(
 
 fn declare_idl_defined_builtin(name: &str) -> Option<TokenStream2> {
     match name {
+        "BTreeMap" => Some(quote! { anchor_lang::__alloc::collections::BTreeMap }),
+        "BTreeSet" => Some(quote! { anchor_lang::__alloc::collections::BTreeSet }),
         "PodBool" => Some(quote! { anchor_lang::pod::PodBool }),
         "PodU16" => Some(quote! { anchor_lang::pod::PodU16 }),
         "PodU32" => Some(quote! { anchor_lang::pod::PodU32 }),
