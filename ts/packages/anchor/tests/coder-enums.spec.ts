@@ -14,4 +14,24 @@ describe("borsh enum codec", () => {
     assert.deepStrictEqual([...encoded], [1]);
     assert.deepStrictEqual(codec.decode(encoded), { withdraw: {} });
   });
+
+  test("does not treat other Object prototype names as enum variants", () => {
+    const codec = getRustEnumCodec([
+      ["toString", getStructCodec([])],
+      ["hasOwnProperty", getStructCodec([])],
+      ["withdraw", getStructCodec([])],
+    ]);
+
+    const encoded = codec.encode({ withdraw: {} });
+
+    assert.deepStrictEqual([...encoded], [2]);
+  });
+
+  test("accepts enum values with a null prototype", () => {
+    const codec = getRustEnumCodec([["withdraw", getStructCodec([])]]);
+    const value = Object.create(null) as { withdraw: Record<string, never> };
+    value.withdraw = {};
+
+    assert.deepStrictEqual([...codec.encode(value)], [0]);
+  });
 });
