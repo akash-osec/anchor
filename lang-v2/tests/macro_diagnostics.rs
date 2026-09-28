@@ -125,6 +125,68 @@ pub mod btree_map_instruction_arg {
     );
 }
 
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn btree_set_tuple_and_idl_type_arguments_remain_supported() {
+    cargo_test_pass_case(
+        "btree_set_tuple_and_idl_type_arguments",
+        r#"
+extern crate alloc;
+
+use alloc::collections::BTreeSet;
+use anchor_lang::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd, AnchorDeserialize, AnchorSerialize, IdlType)]
+pub struct NestedArgs {
+    pub value: u64,
+}
+
+#[derive(AnchorDeserialize, AnchorSerialize, IdlType)]
+pub struct CollectionArgs {
+    pub values: BTreeSet<NestedArgs>,
+    pub pair: (NestedArgs, u16),
+}
+
+#[derive(Accounts)]
+pub struct Noop {}
+
+#[program]
+pub mod btree_set_tuple_and_idl_type_args {
+    use super::*;
+
+    pub fn set(
+        _ctx: &mut Context<Noop>,
+        values: BTreeSet<NestedArgs>,
+        pair: (u8, u16),
+        args: CollectionArgs,
+    ) -> Result<()> {
+        let _ = (values, pair, args);
+        Ok(())
+    }
+}
+
+#[cfg(feature = "idl-build")]
+#[test]
+fn nested_dependencies_are_forwarded() {
+    let type_def = <CollectionArgs as IdlAccountType>::__idl_type_def().unwrap();
+    assert!(type_def.contains("\"name\":\"BTreeSet\""));
+    assert!(type_def.contains("\"name\":\"(NestedArgs,u16)\""));
+
+    let mut accounts = alloc::vec::Vec::new();
+    let mut types = alloc::vec::Vec::new();
+    <CollectionArgs as IdlAccountType>::__register_idl_deps(&mut accounts, &mut types);
+    assert!(types.iter().any(|ty| ty.contains("\"name\":\"NestedArgs\"")));
+}
+"#,
+        &["idl-build"],
+    );
+}
+
 fn cargo_test_pass_case(name: &str, source: &str, features: &[&str]) {
     let mut args = Vec::new();
     if !features.is_empty() {
