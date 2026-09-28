@@ -408,6 +408,56 @@ pub mod __private {
         type Fields =
             BorshDeserializeFields<K, BorshDeserializeFields<V, BorshDeserializeFieldsEnd>>;
     }
+    impl<T: BorshSerializeCompatible> BorshSerializeCompatible for alloc::collections::BTreeSet<T> {
+        type Fields = <T as BorshSerializeCompatible>::Fields;
+    }
+    impl<T: BorshDeserializeCompatible> BorshDeserializeCompatible for alloc::collections::BTreeSet<T> {
+        type Fields = <T as BorshDeserializeCompatible>::Fields;
+    }
+
+    macro_rules! tuple_fields {
+        ($marker:ident, $end:ident, $last:ident) => {
+            $marker<$last, $end>
+        };
+        ($marker:ident, $end:ident, $head:ident, $($tail:ident),+) => {
+            $marker<$head, tuple_fields!($marker, $end, $($tail),+)>
+        };
+    }
+
+    macro_rules! impl_tuple_compatibility {
+        ($($ty:ident),+ $(,)?) => {
+            impl<$($ty: BorshSerializeCompatible),+> BorshSerializeCompatible for ($($ty,)+) {
+                type Fields = tuple_fields!(BorshSerializeFields, BorshSerializeFieldsEnd, $($ty),+);
+            }
+            impl<$($ty: BorshDeserializeCompatible),+> BorshDeserializeCompatible for ($($ty,)+) {
+                type Fields = tuple_fields!(BorshDeserializeFields, BorshDeserializeFieldsEnd, $($ty),+);
+            }
+        };
+    }
+
+    impl BorshSerializeCompatible for () {
+        type Fields = BorshSerializeFieldsEnd;
+    }
+    impl BorshDeserializeCompatible for () {
+        type Fields = BorshDeserializeFieldsEnd;
+    }
+
+    impl_tuple_compatibility!(A, B);
+    impl_tuple_compatibility!(A, B, C);
+    impl_tuple_compatibility!(A, B, C, D);
+    impl_tuple_compatibility!(A, B, C, D, E);
+    impl_tuple_compatibility!(A, B, C, D, E, F);
+    impl_tuple_compatibility!(A, B, C, D, E, F, G);
+    impl_tuple_compatibility!(A, B, C, D, E, F, G, H);
+    impl_tuple_compatibility!(A, B, C, D, E, F, G, H, I);
+    impl_tuple_compatibility!(A, B, C, D, E, F, G, H, I, J);
+    impl_tuple_compatibility!(A, B, C, D, E, F, G, H, I, J, K);
+    impl_tuple_compatibility!(A, B, C, D, E, F, G, H, I, J, K, L);
+    impl_tuple_compatibility!(A, B, C, D, E, F, G, H, I, J, K, L, M);
+    impl_tuple_compatibility!(A, B, C, D, E, F, G, H, I, J, K, L, M, N);
+    impl_tuple_compatibility!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O);
+    impl_tuple_compatibility!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
+
     impl<T: BorshSerializeCompatible> BorshSerializeCompatible for [T] {
         type Fields = <T as BorshSerializeCompatible>::Fields;
     }
