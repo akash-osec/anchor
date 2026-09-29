@@ -91,6 +91,9 @@ with every v1 Borsh encoding:
 
 These are intentional serialization differences in the Wincode path, not
 reasons to reject otherwise valid values with the former compatibility guard.
+This applies to Borsh-shaped instruction data, `#[instruction(...)]` values,
+default events, and `#[account(borsh)]` data. Applications that require strict
+v1 behavior should validate values before serialization.
 
 ## Optimizations
 
