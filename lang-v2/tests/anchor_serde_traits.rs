@@ -25,6 +25,11 @@ pub struct Plain {
     pub b: Option<[u8; 32]>,
 }
 
+#[derive(Debug, AnchorSerialize, AnchorDeserialize)]
+pub struct FloatPayload {
+    pub value: f64,
+}
+
 #[derive(AnchorDeserialize)]
 pub struct ReadOnly {
     pub a: u64,
@@ -107,4 +112,14 @@ fn plain_struct_round_trips() {
         b: Some([1; 32]),
     };
     assert_eq!(roundtrip(&value), value);
+}
+
+#[test]
+fn wincode_accepts_nan_on_borsh_shaped_surfaces() {
+    let value = FloatPayload { value: f64::NAN };
+    let bytes = anchor_lang::wincode::config::serialize(&value, BORSH_CONFIG).unwrap();
+    let decoded: FloatPayload =
+        anchor_lang::wincode::config::deserialize(&bytes, BORSH_CONFIG).unwrap();
+
+    assert!(decoded.value.is_nan());
 }

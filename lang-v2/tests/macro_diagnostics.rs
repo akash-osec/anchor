@@ -832,8 +832,8 @@ pub struct Outer {
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
-fn floats_are_rejected_on_borsh_compatible_surfaces() {
-    compile_fail_case(
+fn floats_are_allowed_on_borsh_compatible_surfaces() {
+    compile_pass_case(
         "float_instruction_arg",
         r#"
 use anchor_lang::prelude::*;
@@ -853,16 +853,14 @@ pub mod float_instruction_arg {
 #[derive(Accounts)]
 pub struct Noop {}
 "#,
-        &[
-            "`f32` and `f64` instruction arguments are not supported",
-            "use an integer or fixed-point representation",
-        ],
     );
 
-    compile_fail_case(
+    compile_pass_case(
         "float_instruction_attr_arg",
         r#"
 use anchor_lang::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
 
 #[derive(Accounts)]
 #[instruction(price: f64)]
@@ -870,16 +868,14 @@ pub struct SetPrice {
     pub data: UncheckedAccount,
 }
 "#,
-        &[
-            "`f32` and `f64` instruction arguments are not supported",
-            "use an integer or fixed-point representation",
-        ],
     );
 
-    compile_fail_case(
+    compile_pass_case(
         "float_instruction_attr_alias",
         r#"
 use anchor_lang::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
 
 type Price = f64;
 
@@ -889,10 +885,9 @@ pub struct SetPrice {
     pub data: UncheckedAccount,
 }
 "#,
-        &["BorshDeserializeCompatible"],
     );
 
-    compile_fail_case(
+    compile_pass_case(
         "float_borsh_account",
         r#"
 use anchor_lang::prelude::*;
@@ -904,13 +899,9 @@ pub struct Price {
     pub value: Option<f32>,
 }
 "#,
-        &[
-            "`f32` and `f64` are not supported on `#[account(borsh)]`",
-            "use an integer or fixed-point representation",
-        ],
     );
 
-    compile_fail_case(
+    compile_pass_case(
         "float_event",
         r#"
 use anchor_lang::prelude::*;
@@ -920,13 +911,9 @@ pub struct PriceChanged {
     pub value: f64,
 }
 "#,
-        &[
-            "`f32` and `f64` are not supported on `#[event]`",
-            "use an integer or fixed-point representation",
-        ],
     );
 
-    compile_fail_case(
+    compile_pass_case(
         "float_idl_type",
         r#"
 use anchor_lang::prelude::*;
@@ -936,10 +923,6 @@ pub struct Price {
     pub value: Vec<f64>,
 }
 "#,
-        &[
-            "`f32` and `f64` are not supported on `#[derive(IdlType)]`",
-            "use an integer or fixed-point representation",
-        ],
     );
 }
 
@@ -948,7 +931,7 @@ pub struct Price {
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
-fn declared_program_rejects_external_float_instruction_types() {
+fn declared_program_accepts_external_float_instruction_types() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let idl_path = manifest_dir.join("target/idls/external_float.json");
     fs::create_dir_all(idl_path.parent().unwrap()).unwrap();
@@ -998,14 +981,9 @@ declare_program!(external_float);
     fs::remove_file(idl_path).unwrap();
 
     assert!(
-        !output.status.success(),
-        "declared program with an external float type unexpectedly compiled successfully"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("BorshSerializeCompatible")
-            || stderr.contains("BorshDeserializeCompatible"),
-        "declared program diagnostics did not identify the Borsh compatibility proof:\n\n{stderr}"
+        output.status.success(),
+        "declared program with an external float type failed to compile:\n\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -1014,7 +992,7 @@ declare_program!(external_float);
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
-fn nested_float_aliases_are_rejected_on_borsh_accounts() {
+fn nested_float_aliases_are_allowed_on_borsh_accounts() {
     compile_pass_case(
         "nested_safe_borsh_account",
         r#"
@@ -1034,7 +1012,7 @@ pub struct SafeAccount {
 "#,
     );
 
-    compile_fail_case(
+    compile_pass_case(
         "nested_float_alias_borsh_account",
         r#"
 use anchor_lang::prelude::*;
@@ -1053,7 +1031,6 @@ pub struct Price {
     pub value: HiddenFloat,
 }
 "#,
-        &["BorshSerializeCompatible", "BorshDeserializeCompatible"],
     );
 }
 
