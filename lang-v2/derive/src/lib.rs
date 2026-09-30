@@ -6229,7 +6229,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
             // No `repr(C)` — wincode is layout-agnostic (it walks the derived
             // schema, not the in-memory byte layout) so the compiler is free
             // to pick whichever Rust layout is best.
-            #[derive(anchor_lang::AnchorSerialize)]
+            #[derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)]
             #(#attrs)*
             #vis struct #name #fields
 
