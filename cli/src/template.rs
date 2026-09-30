@@ -1194,6 +1194,7 @@ fn ts_package_json_v2(jest: bool, license: String) -> String {
     "@types/chai": "^4.3.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^25.6.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.9.3",
     "prettier": "^3.8.3"
   }}
@@ -1203,14 +1204,14 @@ fn ts_package_json_v2(jest: bool, license: String) -> String {
     }
 }
 
-pub fn ts_mocha(name: &str, anchor_version: AnchorVersion) -> String {
+pub fn typescript_test(name: &str, anchor_version: AnchorVersion) -> String {
     match anchor_version {
-        AnchorVersion::V1 => ts_mocha_v1(name),
-        AnchorVersion::V2 => ts_mocha_v2(name),
+        AnchorVersion::V1 => typescript_test_v1(name),
+        AnchorVersion::V2 => typescript_test_v2(name),
     }
 }
 
-fn ts_mocha_v1(name: &str) -> String {
+fn typescript_test_v1(name: &str) -> String {
     format!(
         r#"import * as anchor from "@anchor-lang/core";
 import {{ Program }} from "@anchor-lang/core";
@@ -1250,7 +1251,7 @@ describe("{}", () => {{
     )
 }
 
-fn ts_mocha_v2(name: &str) -> String {
+fn typescript_test_v2(name: &str) -> String {
     format!(
         r#"import * as anchor from "@anchor-lang/core";
 import {{ Program }} from "@anchor-lang/core";
@@ -1530,7 +1531,7 @@ impl TestTemplate {
                     test.write_all(mocha(project_name, anchor_version).as_bytes())?;
                 } else {
                     let mut mocha = File::create(format!("tests/{}.ts", project_name))?;
-                    mocha.write_all(ts_mocha(project_name, anchor_version).as_bytes())?;
+                    mocha.write_all(typescript_test(project_name, anchor_version).as_bytes())?;
                 }
             }
             Self::Jest => {
@@ -2195,7 +2196,7 @@ mod tests {
         assert!(manifest.contains("litesvm = \"0.15.0\""));
         assert!(!manifest.contains("anchor-lang-v2"));
 
-        let test = ts_mocha("counter", AnchorVersion::V1);
+        let test = typescript_test("counter", AnchorVersion::V1);
         assert!(test.contains("[Buffer.from(\"counter\")]"));
         assert!(test.contains(".accountsPartial({ counter })"));
         assert!(!test.contains("counter: counter.publicKey"));
@@ -2208,7 +2209,7 @@ mod tests {
         assert!(manifest.contains("profile = [\"anchor-v2-testing/profile\"]"));
         assert!(manifest.contains("anchor-v2-testing = { git = "));
 
-        let test = ts_mocha("counter", AnchorVersion::V2);
+        let test = typescript_test("counter", AnchorVersion::V2);
         assert!(test.contains("const counter = anchor.web3.Keypair.generate();"));
         assert!(test.contains("counter: counter.publicKey"));
     }
