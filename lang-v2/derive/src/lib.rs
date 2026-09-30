@@ -12,11 +12,10 @@ mod pod_wrapper;
 use {
     proc_macro::TokenStream,
     proc_macro2::{Span, TokenStream as TokenStream2},
-    quote::{quote, ToTokens},
+    quote::quote,
     syn::{
-        parse::{Parse, ParseStream, Parser}, parse_macro_input, spanned::Spanned, Data,
-        DeriveInput, Expr, ExprArray, ExprLit, ExprUnary, Fields, FnArg, Ident, ItemMod,
-        ItemStruct, Lit, LitBool, LitStr, Pat, Token, Type, UnOp,
+        parse::Parser, parse_macro_input, spanned::Spanned, Data, DeriveInput, Expr, ExprLit,
+        ExprUnary, Fields, FnArg, Ident, ItemMod, ItemStruct, Lit, Pat, Type, UnOp,
     },
 };
 
@@ -2250,9 +2249,24 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
         };
         idl::TypeKind::BytemuckRepr(repr)
     };
-    let idl_account_entry = match idl::build_account_entry_string(&name_str, disc_bytes) {
-        Some(s) => quote! { Some(#s) },
-        None => quote! { None },
+    let idl_account_entry = quote! { None };
+    let idl_account_entry_fn = quote! {
+        fn __idl_account_entry() -> Option<&'static str> {
+            let __disc = <Self as anchor_lang::Discriminator>::DISCRIMINATOR;
+            let mut __s = anchor_lang::__alloc::string::String::from(
+                concat!("{\"name\":\"", #name_str, "\",\"discriminator\":[")
+            );
+            for (index, byte) in __disc.iter().enumerate() {
+                if index != 0 {
+                    __s.push(',');
+                }
+                __s.push_str(&anchor_lang::__alloc::string::ToString::to_string(byte));
+            }
+            // Retain the defining type only while collecting entries. This
+            // prevents same-named types in different modules being deduped.
+            __s.push_str(concat!("],\"__anchor_type\":\"", module_path!(), "::", #name_str, "\"}"));
+            Some(anchor_lang::__alloc::boxed::Box::leak(__s.into_boxed_str()))
+        }
     };
     let idl_type_def = idl::build_struct_type_def_emission(
         &name_str,
@@ -2466,6 +2480,7 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[doc(hidden)]
         impl anchor_lang::IdlAccountType for #name {
             const __IDL_ACCOUNT_ENTRY: Option<&'static str> = #idl_account_entry;
+            #idl_account_entry_fn
             fn __idl_type_def() -> Option<&'static str> {
                 #idl_type_def
             }
@@ -4439,9 +4454,10 @@ fn gen_declare_program_pod_impls(
     // imported layouts may include padding or non-Pod fields. Emit the
     // unsafe impls without field-Pod / no-padding assertions.
     if serialization.is_bytemuck_unsafe() {
+        let where_clause = &generics.pod_where_clause;
         return quote! {
-            unsafe impl #impl_generics anchor_lang::bytemuck::Pod for #ident #ty_generics {}
-            unsafe impl #impl_generics anchor_lang::bytemuck::Zeroable for #ident #ty_generics {}
+            unsafe impl #impl_generics anchor_lang::bytemuck::Pod for #ident #ty_generics #where_clause {}
+            unsafe impl #impl_generics anchor_lang::bytemuck::Zeroable for #ident #ty_generics #where_clause {}
         };
     }
 
