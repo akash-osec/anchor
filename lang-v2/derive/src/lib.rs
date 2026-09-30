@@ -3066,6 +3066,7 @@ fn gen_declare_program_errors(
 ) -> syn::Result<TokenStream2> {
     let Some(errors) = idl.get("errors").and_then(serde_json::Value::as_array) else {
         return Ok(quote! {
+            #[cfg(not(feature = "idl-build"))]
             pub mod error {
                 use super::*;
             }
@@ -3074,6 +3075,7 @@ fn gen_declare_program_errors(
 
     if errors.is_empty() {
         return Ok(quote! {
+            #[cfg(not(feature = "idl-build"))]
             pub mod error {
                 use super::*;
             }
@@ -3113,6 +3115,7 @@ fn gen_declare_program_errors(
     }
 
     Ok(quote! {
+        #[cfg(not(feature = "idl-build"))]
         pub mod error {
             use super::*;
 
