@@ -63,34 +63,17 @@ pub mod __idl {
     };
 }
 
-/// Compatibility namespace used by generated declared-program bindings.
-///
-/// Host builds retain the standard-library collection types for client and
-/// IDL tooling. On-chain generated instruction types use bounded buffers so
-/// the bindings do not introduce an allocator dependency into the SBF graph.
+/// Bounded compatibility namespace used by generated on-chain IDL bindings.
+/// Host builds retain the standard library's owned collections; the runtime
+/// branch uses fixed-capacity storage for the generated target surface.
+#[cfg(any(target_os = "solana", target_arch = "bpf"))]
 #[doc(hidden)]
-#[cfg(all(
-    any(target_os = "solana", target_arch = "bpf"),
-    feature = "alloc"
-))]
-pub mod __idl {
-    pub mod string {
-        pub use alloc::string::String;
-    }
-
-    pub mod vec {
-        pub use alloc::vec::Vec;
-    }
-}
-
-/// Bounded collection aliases used by generated bindings in a genuinely
-/// allocator-free target build. Alloc-enabled programs retain the existing
-/// owned collection types for compatibility with their runtime serializers.
+/// Bounded compatibility namespace used by generated on-chain IDL bindings.
+/// Host builds retain the standard library's owned collections; the runtime
+/// branch uses fixed-capacity storage for the generated target surface.
+#[cfg(any(target_os = "solana", target_arch = "bpf"))]
 #[doc(hidden)]
-#[cfg(all(
-    any(target_os = "solana", target_arch = "bpf"),
-    not(feature = "alloc")
-))]
+>>>>>>> 370cffe7f (fix(lang-v2): bound generated sequences on SBF)
 pub mod __idl {
     pub mod string {
         pub type String = crate::FixedVec<u8, { crate::MAX_IDL_SEQUENCE }>;
