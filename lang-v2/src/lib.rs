@@ -68,12 +68,6 @@ pub mod __idl {
 /// branch uses fixed-capacity storage for the generated target surface.
 #[cfg(any(target_os = "solana", target_arch = "bpf"))]
 #[doc(hidden)]
-/// Bounded compatibility namespace used by generated on-chain IDL bindings.
-/// Host builds retain the standard library's owned collections; the runtime
-/// branch uses fixed-capacity storage for the generated target surface.
-#[cfg(any(target_os = "solana", target_arch = "bpf"))]
-#[doc(hidden)]
->>>>>>> 370cffe7f (fix(lang-v2): bound generated sequences on SBF)
 pub mod __idl {
     pub mod string {
         pub type String = crate::FixedVec<u8, { crate::MAX_IDL_SEQUENCE }>;
@@ -83,9 +77,36 @@ pub mod __idl {
         pub type Vec<T> = crate::FixedVec<T, { crate::MAX_IDL_SEQUENCE }>;
     }
 }
+
+/// Format a message into a bounded stack buffer and send it to the Solana log
+/// syscall on the on-chain target.
+#[cfg(any(target_os = "solana", target_arch = "bpf"))]
+pub fn sol_log_fmt(args: core::fmt::Arguments<'_>) {
+    struct LogWriter {
+        bytes: FixedVec<u8, 256>,
+    }
+
+    impl core::fmt::Write for LogWriter {
+        fn write_str(&mut self, value: &str) -> core::fmt::Result {
+            self.bytes
+                .try_extend_from_slice(value.as_bytes())
+                .map_err(|_| core::fmt::Error)
+        }
+    }
+
+    let mut writer = LogWriter {
+        bytes: FixedVec::new(),
+    };
+    let _ = core::fmt::write(&mut writer, args);
+    let message = unsafe { core::str::from_utf8_unchecked(writer.bytes.as_slice()) };
+    solana_msg::sol_log(message);
+}
 #[macro_export]
 macro_rules! msg {
     ($($arg:tt)*) => {{
+        #[cfg(any(target_os = "solana", target_arch = "bpf"))]
+        $crate::sol_log_fmt(core::format_args!($($arg)*));
+        #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
         $crate::solana_msg::msg!($($arg)*);
     }};
 }
@@ -429,6 +450,7 @@ pub mod solana_program {
         pub type Pubkey = crate::Address;
     }
 
+    #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
     pub mod rent {
         pub use solana_sysvar::rent::*;
     }
