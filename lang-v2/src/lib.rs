@@ -57,6 +57,22 @@ pub mod __idl {
         vec::Vec,
     };
 }
+
+/// Bounded compatibility namespace used by generated on-chain IDL bindings.
+/// Host builds retain the standard library's owned collections; the runtime
+/// branch uses fixed-capacity storage for the generated target surface.
+#[cfg(any(target_os = "solana", target_arch = "bpf"))]
+#[doc(hidden)]
+pub mod __idl {
+    pub mod string {
+        pub type String = crate::FixedVec<u8, { crate::MAX_IDL_SEQUENCE }>;
+    }
+
+    pub mod vec {
+        pub type Vec<T> = crate::FixedVec<T, { crate::MAX_IDL_SEQUENCE }>;
+    }
+}
+
 #[macro_export]
 macro_rules! msg {
     ($($arg:tt)*) => {{
