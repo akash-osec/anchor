@@ -12,6 +12,8 @@ extern crate self as anchor_lang;
 pub extern crate alloc as __alloc;
 
 pub mod accounts;
+#[cfg(any(target_os = "solana", target_arch = "bpf"))]
+mod account_meta;
 pub mod context;
 mod context_cpi;
 pub mod cpi;
@@ -73,9 +75,36 @@ pub mod __idl {
     }
 }
 
+/// Format a message into a bounded stack buffer and send it to the Solana log
+/// syscall on the on-chain target.
+#[cfg(any(target_os = "solana", target_arch = "bpf"))]
+pub fn sol_log_fmt(args: core::fmt::Arguments<'_>) {
+    struct LogWriter {
+        bytes: FixedVec<u8, 256>,
+    }
+
+    impl core::fmt::Write for LogWriter {
+        fn write_str(&mut self, value: &str) -> core::fmt::Result {
+            self.bytes
+                .try_extend_from_slice(value.as_bytes())
+                .map_err(|_| core::fmt::Error)
+        }
+    }
+
+    let mut writer = LogWriter {
+        bytes: FixedVec::new(),
+    };
+    let _ = core::fmt::write(&mut writer, args);
+    let message = unsafe { core::str::from_utf8_unchecked(writer.bytes.as_slice()) };
+    solana_msg::sol_log(message);
+}
+
 #[macro_export]
 macro_rules! msg {
     ($($arg:tt)*) => {{
+        #[cfg(any(target_os = "solana", target_arch = "bpf"))]
+        $crate::sol_log_fmt(core::format_args!($($arg)*));
+        #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
         $crate::solana_msg::msg!($($arg)*);
     }};
 }
@@ -325,7 +354,10 @@ pub use cpi::create_account_with_signers;
 /// `solana_program::pubkey::Pubkey` to [`Address`], but external Solana crates
 /// may still expose nominally distinct `Pubkey` newtypes with the same 32-byte
 /// representation.
+#[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
 pub use solana_instruction::account_meta::AccountMeta;
+#[cfg(any(target_os = "solana", target_arch = "bpf"))]
+pub use account_meta::AccountMeta;
 pub use {
     accounts::{AccountInitialize, SlabInit},
     anchor_derive_accounts::{
@@ -365,11 +397,15 @@ pub mod solana_program {
     }
 
     pub mod instruction {
+        #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
         pub use solana_instruction::*;
+        #[cfg(any(target_os = "solana", target_arch = "bpf"))]
+        pub use crate::account_meta::AccountMeta;
     }
 
     #[cfg(feature = "compat")]
     pub use crate::pubkey;
+    #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
     pub use solana_system_interface::instruction as system_instruction;
 
     #[cfg(feature = "compat")]
@@ -377,6 +413,7 @@ pub mod solana_program {
         pub type Pubkey = crate::Address;
     }
 
+    #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
     pub mod rent {
         pub use solana_sysvar::rent::*;
     }
