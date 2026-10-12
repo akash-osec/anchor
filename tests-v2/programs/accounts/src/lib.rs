@@ -2,10 +2,7 @@
 //! seeds, and CPI suites: Sysvar, Box<Account>, SystemAccount, and bare
 //! UncheckedAccount values.
 
-extern crate alloc;
-
 use {
-    alloc::string::String,
     anchor_lang::{
         accounts::Slab,
         prelude::*,
