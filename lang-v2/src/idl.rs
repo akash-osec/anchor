@@ -78,12 +78,6 @@ impl<T: IdlAccountType, const N: usize> IdlAccountType for [T; N] {
     }
 }
 
-impl<T: IdlAccountType, const N: usize> IdlAccountType for crate::FixedVec<T, N> {
-    fn __register_idl_deps(accounts: &mut IdlEntries, types: &mut IdlEntries) {
-        T::__register_idl_deps(accounts, types);
-    }
-}
-
 impl<T: IdlAccountType> IdlAccountType for [T] {
     fn __register_idl_deps(accounts: &mut IdlEntries, types: &mut IdlEntries) {
         T::__register_idl_deps(accounts, types);
