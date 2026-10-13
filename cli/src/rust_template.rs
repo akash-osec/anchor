@@ -589,6 +589,7 @@ pub fn ts_package_json(jest: bool, license: String) -> String {
 pub fn ts_mocha(name: &str) -> String {
     format!(
         r#"import * as anchor from "@anchor-lang/core";
+import {{ generateKeyPairSigner }} from "@solana/kit";
 import {{ Program }} from "@anchor-lang/core";
 import {{ generateKeyPairSigner }} from "@solana/kit";
 import {{ {} }} from "../target/types/{}";
@@ -622,6 +623,7 @@ describe("{}", () => {{
 pub fn ts_jest(name: &str) -> String {
     format!(
         r#"import * as anchor from "@anchor-lang/core";
+import {{ generateKeyPairSigner }} from "@solana/kit";
 import {{ Program }} from "@anchor-lang/core";
 import {{ generateKeyPairSigner }} from "@solana/kit";
 import {{ {} }} from "../target/types/{}";
