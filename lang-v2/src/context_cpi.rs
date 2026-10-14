@@ -104,7 +104,11 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
 
         // Append remaining accounts using the handle's writable/signer flags
         // so PDA remaining accounts marked with `as_signer()` emit signer metas.
-        for handle in &self.remaining_accounts {
+        #[cfg(not(target_os = "solana"))]
+        let remaining_accounts = &self.remaining_accounts;
+        #[cfg(target_os = "solana")]
+        let remaining_accounts = self.remaining_accounts;
+        for handle in remaining_accounts {
             instruction_accounts.push(InstructionAccount::new(
                 handle.address(),
                 handle.is_writable(),
