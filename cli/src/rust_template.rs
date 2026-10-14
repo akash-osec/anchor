@@ -1127,14 +1127,15 @@ mod tests {
     }
 
     #[test]
-    fn host_rust_templates_materialize_account_metas() {
+    fn host_rust_templates_convert_account_metas() {
         for template in [
             create_program_template_mollusk_test("my_program", Path::new("tests")),
             create_program_template_litesvm_test("my_program", Path::new("tests")),
         ] {
+            assert!(template[0].1.contains(".to_account_metas(None)"));
             assert!(template[0]
                 .1
-                .contains(".to_account_metas(None)\n        .to_vec()"));
+                .contains("anchor_lang::solana_program::instruction::AccountMeta"));
         }
     }
 }
