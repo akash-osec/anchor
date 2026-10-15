@@ -2185,6 +2185,8 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
             const HEADER_SIZE: usize = #header_size_expr;
             const MUT_MASK: [u64; 4] = #mut_mask_expr;
             const HAS_DYNAMIC_MUT_MASK: bool = #has_dynamic_mut_mask_expr;
+            type ViewStorage =
+                [::core::mem::MaybeUninit<anchor_lang::AccountView>; #header_size_expr];
 
             #[inline(always)]
             fn active_mut_mask(&self) -> [u64; 4] {
@@ -4183,6 +4185,7 @@ fn gen_declare_program_events(idl: &serde_json::Value) -> syn::Result<TokenStrea
                         Ok(data)
                     }
 
+                    #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
                     fn data(&self) -> anchor_lang::InstructionDataBuffer {
                         self.try_data().expect("event serialization exceeded the fixed buffer")
                     }
@@ -4205,6 +4208,7 @@ fn gen_declare_program_events(idl: &serde_json::Value) -> syn::Result<TokenStrea
                         Ok(data)
                     }
 
+                    #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
                     fn data(&self) -> anchor_lang::InstructionDataBuffer {
                         self.try_data().expect("event serialization exceeded the fixed buffer")
                     }
@@ -5571,10 +5575,13 @@ fn process_handler(
     } else {
         (quote! {}, quote! {})
     };
-    // Keep generated on-chain CPI frames proportional to the instruction
-    // being serialized. The public `InstructionData` buffer remains bounded
-    // by the transaction limit, but using that full buffer inside every CPI
-    // wrapper needlessly reserves 1232 bytes on the SBF stack.
+    // On SBF, serialize CPI data into the smallest safe inline buffer for
+    // this instruction. Borrowed arguments can refer to data larger than the
+    // instruction struct itself, so those keep the transaction-wide bound;
+    // fully inline arguments are bounded by their in-memory representation
+    // plus the discriminator. This avoids reserving 1232 bytes for every
+    // generated CPI wrapper and keeps large IDL surfaces below the SBF stack
+    // limit.
     let ix_max_data_len = if has_ref_args {
         quote! { anchor_lang::MAX_INSTRUCTION_DATA }
     } else {
@@ -5604,20 +5611,27 @@ fn process_handler(
                 Ok(self.data())
             }
 
+            #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
             fn data(&self) -> anchor_lang::InstructionDataBuffer {
                 let mut data = anchor_lang::InstructionDataBuffer::new();
-                self.__try_data_into(&mut data)
-                    .expect("instruction serialization exceeded the fixed buffer");
+                anchor_lang::try_extend_instruction_data(&mut data, Self::DISCRIMINATOR)
+                    .expect("host instruction discriminator serialization failed");
+                anchor_lang::wincode::config::serialize_into(
+                    &mut data,
+                    self,
+                    anchor_lang::BORSH_CONFIG,
+                )
+                .expect("host instruction serialization failed");
                 data
             }
         }
-
         #(#handler_cfg_attrs)*
         impl #ix_lt_decl #ix_struct_name #ix_lt_use {
             #[cfg(any(target_os = "solana", target_arch = "bpf"))]
             #[doc(hidden)]
             pub const __MAX_DATA_LEN: usize = #ix_max_data_len;
 
+            #[cfg(any(target_os = "solana", target_arch = "bpf"))]
             #[doc(hidden)]
             pub fn __try_data_into<const N: usize>(
                 &self,
@@ -5976,7 +5990,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
                         anchor_lang::ErrorCode::AccountNotEnoughKeys,
                     ).into();
                 }
-                let mut __cursor = anchor_lang::AccountCursor::new(__input, __lookup);
+                let mut __cursor = anchor_lang::AccountCursor::new_without_lookup(__input);
                 let __event_authority = __cursor.next();
                 if !__event_authority.is_signer() {
                     return anchor_lang::Error::from(
@@ -6117,10 +6131,6 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         anchor_lang::pinocchio::default_panic_handler!();
 
         /// Matches Solana's transaction-wide account cap (u8 index space).
-        /// The lookup array holds `[AccountView; 256]` = ~2 KiB of frame
-        /// used for duplicate-account resolution during cursor walks.
-        const __ANCHOR_MAX_ACCOUNTS: usize = 256;
-
         /// Core dispatch: program-id check, discriminator parse, account
         /// cursor setup, handler dispatch. Exported as the `entrypoint`
         /// symbol unless `no-entrypoint` is active. Custom entrypoints
@@ -6142,36 +6152,27 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         // can either (a) call this from Rust via its module path, or
         // (b) tail-call it from asm via the unmangled linker symbol.
         //
-        // Both exports are gated on `target_os = "solana"`: the symbol names
+        // Both exports are gated on `any(target_os = "solana", target_arch = "bpf")`: the symbol names
         // only matter to the SBF linker, and un-mangling on host would cause
         // duplicate-symbol errors whenever two `no-entrypoint` crates end up
         // in the same host-link (e.g. `cargo test` pulling in multiple `cpi`
         // deps).
         #[cfg_attr(
-            all(target_os = "solana", not(feature = "no-entrypoint")),
+            all(any(target_os = "solana", target_arch = "bpf"), not(feature = "no-entrypoint")),
             export_name = "entrypoint"
         )]
-        #[cfg_attr(all(target_os = "solana", feature = "no-entrypoint"), no_mangle)]
+        #[cfg_attr(all(any(target_os = "solana", target_arch = "bpf"), feature = "no-entrypoint"), no_mangle)]
         pub unsafe extern "C" fn __anchor_dispatch(
             __input: *mut u8,
             __ix_data_ptr: *const u8,
         ) -> u64 {
-            let mut __lookup: [::core::mem::MaybeUninit<anchor_lang::AccountView>;
-                __ANCHOR_MAX_ACCOUNTS] =
-                [const { ::core::mem::MaybeUninit::uninit() }; __ANCHOR_MAX_ACCOUNTS];
-
-            __anchor_dispatch_internal(
-                __input,
-                __ix_data_ptr,
-                __lookup.as_mut_ptr() as *mut anchor_lang::AccountView,
-            )
+            __anchor_dispatch_internal(__input, __ix_data_ptr)
         }
 
         #[inline(never)]
         unsafe fn __anchor_dispatch_internal(
             __input: *mut u8,
             __ix_data_ptr: *const u8,
-            __lookup: *mut anchor_lang::AccountView,
         ) -> u64 {
             let __ix_data_len = *(__ix_data_ptr.sub(8) as *const u64) as usize;
             let __program_id: &anchor_lang::Address =
@@ -6184,7 +6185,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
             let __num = *(__input as *const u64) as usize;
             #event_cpi_dispatch
 
-            let mut __cursor = anchor_lang::AccountCursor::new(__input, __lookup);
+            let mut __cursor = anchor_lang::AccountCursor::new_without_lookup(__input);
 
             #(#dispatch_arms)*
             anchor_lang::Error::from(
@@ -6525,6 +6526,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
                         .map_err(|_| anchor_lang::Error::InvalidInstructionData)
                 }
 
+                #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
                 fn data(&self) -> anchor_lang::InstructionDataBuffer {
                     self.try_data().expect("event serialization exceeded the fixed buffer")
                 }
@@ -6699,6 +6701,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
                         Ok(())
                     }
 
+                    #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
                     fn data(&self) -> anchor_lang::InstructionDataBuffer {
                         self.try_data().expect("event serialization exceeded the fixed buffer")
                     }
