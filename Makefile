@@ -60,7 +60,7 @@ TESTS_V2_COVERAGE_ARGS := $(foreach test,$(TESTS_V2_COVERAGE_TESTS),--test $(tes
 # the V2 no-alloc test matrix. It remains available for host compatibility
 # work, but cannot be built as an on-chain V2 program without reintroducing
 # allocator-backed serialization.
-TESTS_V2_NON_COVERAGE_TESTS := compile_fail
+TESTS_V2_NON_COVERAGE_TESTS := borsh_realloc compile_fail
 TESTS_V2_NON_COVERAGE_ARGS := $(foreach test,$(TESTS_V2_NON_COVERAGE_TESTS),--test $(test))
 
 .PHONY: coverage-v2
