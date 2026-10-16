@@ -4,7 +4,7 @@ extern crate alloc;
 
 use {
     crate::token_shared::multisig_signer_addresses,
-    alloc::{string::String, vec::Vec},
+    alloc::string::String,
     anchor_lang::{require_eq, CpiContext, CpiHandle, CpiHandleMut, ToCpiAccounts},
     pinocchio::address::Address,
     solana_program_error::ProgramError,
@@ -85,7 +85,7 @@ pub struct PermanentDelegateInitialize<'a> {
     pub mint: CpiHandleMut<'a>,
 }
 
-fn return_data_from(program: &Address) -> Result<Vec<u8>, ProgramError> {
+fn return_data_from(program: &Address) -> Result<pinocchio::cpi::ReturnData, ProgramError> {
     let (return_program, data) = anchor_lang::solana_program::program::get_return_data()
         .ok_or(ProgramError::InvalidInstructionData)?;
     require_eq!(
@@ -146,7 +146,7 @@ pub fn amount_to_ui_amount<'a>(
         amount,
     )?;
     ctx.invoke_ix(ix)?;
-    String::from_utf8(return_data_from(ctx.program)?)
+    String::from_utf8(return_data_from(ctx.program)?.as_slice().to_vec())
         .map_err(|_| ProgramError::InvalidInstructionData)
 }
 
