@@ -20,6 +20,86 @@ pub struct FixedVec<T, const N: usize> {
     len: usize,
 }
 
+/// Compact optional-account sentinel flags for transient CPI metadata.
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+pub struct AccountFlags {
+    bits: u64,
+    len: usize,
+}
+
+impl AccountFlags {
+    #[inline]
+    pub const fn new() -> Self {
+        Self { bits: 0, len: 0 }
+    }
+
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    pub fn try_push(&mut self, value: bool) -> Result<(), bool> {
+        if self.len >= crate::MAX_ACCOUNT_METAS {
+            return Err(value);
+        }
+        if value {
+            self.bits |= 1 << self.len;
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    #[inline]
+    pub fn push(&mut self, value: bool) {
+        self.try_push(value)
+            .expect("account flag capacity exceeded");
+    }
+
+    #[inline]
+    pub fn get(&self, index: usize) -> bool {
+        index < self.len && (self.bits & (1 << index)) != 0
+    }
+
+    #[inline]
+    pub fn resize(&mut self, len: usize, value: bool) {
+        assert!(len <= crate::MAX_ACCOUNT_METAS, "account flag capacity exceeded");
+        while self.len < len {
+            self.push(value);
+        }
+        if len < self.len {
+            self.bits &= if len == 0 { 0 } else { (1 << len) - 1 };
+            self.len = len;
+        }
+    }
+
+    #[inline]
+    pub fn iter(&self) -> AccountFlagsIter<'_> {
+        AccountFlagsIter {
+            flags: self,
+            index: 0,
+        }
+    }
+}
+
+pub struct AccountFlagsIter<'a> {
+    flags: &'a AccountFlags,
+    index: usize,
+}
+
+impl Iterator for AccountFlagsIter<'_> {
+    type Item = bool;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index == self.flags.len {
+            return None;
+        }
+        let value = self.flags.get(self.index);
+        self.index += 1;
+        Some(value)
+    }
+}
+
 impl<T: fmt::Debug, const N: usize> fmt::Debug for FixedVec<T, N> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_list().entries(self.as_slice()).finish()
@@ -363,7 +443,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::FixedVec;
+    use super::{AccountFlags, FixedVec};
+
+    #[test]
+    fn account_flags_pack_without_per_slot_storage() {
+        let mut flags = AccountFlags::new();
+        flags.push(false);
+        flags.push(true);
+        flags.push(false);
+        assert_eq!(flags.len(), 3);
+        assert_eq!(flags.iter().collect::<std::vec::Vec<_>>(), [false, true, false]);
+    }
 
     #[test]
     fn borsh_sequence_round_trips_without_heap_storage() {

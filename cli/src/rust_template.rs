@@ -984,7 +984,8 @@ fn test_initialize() {{
             counter,
             system_program: solana_sdk_ids::system_program::id(),
         }}
-        .to_account_metas(None),
+        .to_account_metas(None)
+        .to_vec(),
     );
 
     let counter_space = <Account<{0}::state::Counter> as Space>::INIT_SPACE;
@@ -1059,7 +1060,8 @@ fn test_initialize() {{
             counter: counter.pubkey(),
             system_program: System::id(),
         }}
-        .to_account_metas(None),
+        .to_account_metas(None)
+        .to_vec(),
     );
 
     let blockhash = svm.latest_blockhash();
