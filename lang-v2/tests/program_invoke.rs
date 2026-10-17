@@ -495,8 +495,12 @@ fn invoke_remaining_pda_as_signer_with_seeds() {
         account: typed_view.to_cpi_handle(),
     };
 
+    let mut remaining_accounts = CpiHandleBuffer::new();
+    assert!(remaining_accounts
+        .try_push(CpiHandle::readonly(&remaining_view).as_signer())
+        .is_ok());
     CpiContext::new_with_signer(&program, accounts, &[&[b"pda", &[7]]])
-        .with_remaining_accounts(vec![CpiHandle::readonly(&remaining_view).as_signer()])
+        .with_remaining_accounts(remaining_accounts)
         .invoke(&[])
         .unwrap();
 }
@@ -807,11 +811,15 @@ fn unchecked_handle_api_is_available() {
 }
 
 #[test]
-fn host_optional_sentinel_flags_are_not_inline_capped() {
+fn optional_sentinel_flags_reject_inline_overflow() {
     let mut flags = anchor_lang::BoolBuffer::new();
-    for _ in 0..=MAX_ACCOUNT_METAS {
+    for _ in 0..MAX_ACCOUNT_METAS {
         anchor_lang::try_push_bool(&mut flags, false).unwrap();
     }
 
-    assert_eq!(flags.len(), MAX_ACCOUNT_METAS + 1);
+    assert_eq!(
+        anchor_lang::try_push_bool(&mut flags, false),
+        Err(ProgramError::InvalidArgument)
+    );
+    assert_eq!(flags.len(), MAX_ACCOUNT_METAS);
 }

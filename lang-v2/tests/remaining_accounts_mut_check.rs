@@ -35,7 +35,7 @@ extern crate alloc;
 use {
     anchor_lang::{
         testing::{AccountRecord, SbfInputBuffer},
-        AccountCursor, AccountView, AccountViewBuffer, Bumps, Context, MutMask,
+        AccountCursor, AccountView, Bumps, Context, MutMask,
     },
     core::mem::MaybeUninit,
     solana_address::Address,
@@ -77,7 +77,7 @@ fn run_with(
     records: &[AccountRecord],
     header_size: usize,
     mut_mask: &'static [u64; 4],
-) -> Result<AccountViewBuffer, ProgramError> {
+) -> Result<std::vec::Vec<AccountView>, ProgramError> {
     let mut buf = SbfInputBuffer::build(records);
     let mut lookup: [MaybeUninit<AccountView>; MAX_ACCOUNTS] =
         [const { MaybeUninit::uninit() }; MAX_ACCOUNTS];

@@ -20,107 +20,6 @@ pub struct FixedVec<T, const N: usize> {
     len: usize,
 }
 
-/// Compact boolean flags for account metadata.
-///
-/// Optional-account sentinel flags are bounded by `MAX_ACCOUNT_METAS`, so a
-/// bitset avoids reserving one byte plus padding for every slot in a transient
-/// on-stack vector. The public slice implementation remains supported through
-/// [`crate::OptionalSentinelFlags`] for compatibility with direct CPI callers.
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
-pub struct AccountFlags {
-    bits: u64,
-    len: usize,
-}
-
-impl AccountFlags {
-    #[inline]
-    pub const fn new() -> Self {
-        Self { bits: 0, len: 0 }
-    }
-
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.len
-    }
-
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    #[inline]
-    pub fn push(&mut self, value: bool) {
-        self.try_push(value)
-            .expect("account flag capacity exceeded");
-    }
-
-    #[inline]
-    pub fn try_push(&mut self, value: bool) -> Result<(), bool> {
-        if self.len >= crate::MAX_ACCOUNT_METAS {
-            return Err(value);
-        }
-        if value {
-            self.bits |= 1 << self.len;
-        }
-        self.len += 1;
-        Ok(())
-    }
-
-    #[inline]
-    pub fn get(&self, index: usize) -> bool {
-        index < self.len && (self.bits & (1 << index)) != 0
-    }
-
-    #[inline]
-    pub fn iter(&self) -> AccountFlagsIter<'_> {
-        AccountFlagsIter {
-            flags: self,
-            index: 0,
-        }
-    }
-
-    #[inline]
-    pub fn resize(&mut self, len: usize, value: bool) {
-        assert!(
-            len <= crate::MAX_ACCOUNT_METAS,
-            "account flag capacity exceeded"
-        );
-        while self.len < len {
-            self.push(value);
-        }
-        if len < self.len {
-            self.bits &= if len == 0 { 0 } else { (1 << len) - 1 };
-            self.len = len;
-        }
-    }
-}
-
-impl Extend<bool> for AccountFlags {
-    fn extend<I: IntoIterator<Item = bool>>(&mut self, iter: I) {
-        for value in iter {
-            self.push(value);
-        }
-    }
-}
-
-pub struct AccountFlagsIter<'a> {
-    flags: &'a AccountFlags,
-    index: usize,
-}
-
-impl Iterator for AccountFlagsIter<'_> {
-    type Item = bool;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index == self.flags.len {
-            return None;
-        }
-        let value = self.flags.get(self.index);
-        self.index += 1;
-        Some(value)
-    }
-}
-
 impl<T: fmt::Debug, const N: usize> fmt::Debug for FixedVec<T, N> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_list().entries(self.as_slice()).finish()
@@ -464,30 +363,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{AccountFlags, FixedVec};
-
-    #[test]
-    fn account_flags_pack_and_resize_without_a_vector() {
-        let mut flags = AccountFlags::new();
-        flags.extend([false, true, false, true]);
-        assert_eq!(flags.len(), 4);
-        assert!(!flags.get(0));
-        assert!(flags.get(1));
-        assert!(!flags.get(2));
-        assert!(flags.get(3));
-        let mut iter = flags.iter();
-        assert_eq!(iter.next(), Some(false));
-        assert_eq!(iter.next(), Some(true));
-        assert_eq!(iter.next(), Some(false));
-        assert_eq!(iter.next(), Some(true));
-        assert_eq!(iter.next(), None);
-
-        flags.resize(2, false);
-        let mut iter = flags.iter();
-        assert_eq!(iter.next(), Some(false));
-        assert_eq!(iter.next(), Some(true));
-        assert_eq!(iter.next(), None);
-    }
+    use super::FixedVec;
 
     #[test]
     fn borsh_sequence_round_trips_without_heap_storage() {
@@ -517,8 +393,5 @@ mod tests {
         assert!(values.try_push(1).is_ok());
         assert_eq!(values.try_push(2), Err(2));
 
-        let mut flags = AccountFlags::new();
-        flags.resize(crate::MAX_ACCOUNT_METAS, false);
-        assert_eq!(flags.try_push(true), Err(true));
     }
 }
