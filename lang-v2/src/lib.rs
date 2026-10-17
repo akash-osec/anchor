@@ -169,7 +169,7 @@ macro_rules! debug {
 // Re-export wincode for instruction data serialization
 pub use wincode;
 
-pub use fixed_vec::FixedVec;
+pub use fixed_vec::{AccountFlags, AccountFlagsIter, FixedVec};
 pub use idl::{IdlAccountType, IdlEntries};
 /// Maximum number of account metas held by an on-chain V2 inline buffer.
 ///
@@ -221,11 +221,7 @@ pub type AccountViewBuffer = FixedVec<pinocchio::account::AccountView, MAX_ACCOU
 pub type CpiHandleBuffer<'a> = FixedVec<CpiHandle<'a>, MAX_RUNTIME_ACCOUNT_METAS>;
 #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
 pub type CpiHandleBuffer<'a> = FixedVec<CpiHandle<'a>, MAX_ACCOUNT_METAS>;
-
-#[cfg(any(target_os = "solana", target_arch = "bpf"))]
-pub type BoolBuffer = FixedVec<bool, MAX_RUNTIME_ACCOUNT_METAS>;
-#[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
-pub type BoolBuffer = FixedVec<bool, MAX_ACCOUNT_METAS>;
+pub type BoolBuffer = AccountFlags;
 pub type InstructionDataBuffer = FixedVec<u8, MAX_INSTRUCTION_DATA>;
 
 #[cfg(any(target_os = "solana", target_arch = "bpf"))]
@@ -304,12 +300,12 @@ impl<const N: usize> OptionalSentinelFlags for [bool; N] {
 impl OptionalSentinelFlags for BoolBuffer {
     #[inline]
     fn len(&self) -> usize {
-        FixedVec::len(self)
+        AccountFlags::len(self)
     }
 
     #[inline]
     fn get(&self, index: usize) -> bool {
-        self.as_slice().get(index).copied().unwrap_or(false)
+        AccountFlags::get(self, index)
     }
 }
 
