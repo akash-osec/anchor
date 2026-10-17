@@ -35,7 +35,7 @@ extern crate alloc;
 use {
     anchor_lang::{
         testing::{AccountRecord, SbfInputBuffer},
-        AccountCursor, AccountView, AccountViewBuffer, Bumps, Context, MutMask,
+        AccountCursor, AccountView, Bumps, Context, MutMask,
     },
     core::mem::MaybeUninit,
     solana_address::Address,
@@ -77,7 +77,7 @@ fn run_with(
     records: &[AccountRecord],
     header_size: usize,
     mut_mask: &'static [u64; 4],
-) -> Result<AccountViewBuffer, ProgramError> {
+) -> Result<std::vec::Vec<AccountView>, ProgramError> {
     let mut buf = SbfInputBuffer::build(records);
     let mut lookup: [MaybeUninit<AccountView>; MAX_ACCOUNTS] =
         [const { MaybeUninit::uninit() }; MAX_ACCOUNTS];
@@ -105,7 +105,7 @@ fn run_with(
         remaining_num,
         MutMask::Static(mut_mask),
     );
-    ctx.remaining_accounts()
+    ctx.remaining_accounts().map(|views| views.to_vec())
 }
 
 // ---------------------------------------------------------------------------
@@ -254,8 +254,8 @@ fn remaining_accounts_result_is_cached_on_success() {
         MutMask::Static(MUT_MASK_SLOT0),
     );
 
-    let first = ctx.remaining_accounts().expect("first call");
+    let first_len = ctx.remaining_accounts().expect("first call").len();
     let second = ctx.remaining_accounts().expect("second call");
-    assert_eq!(first.len(), 2);
+    assert_eq!(first_len, 2);
     assert_eq!(second.len(), 2);
 }

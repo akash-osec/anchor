@@ -13,8 +13,8 @@ use {
         },
         testing::{AccountBuffer, MIN_ACCOUNT_BUF},
         unchecked_invoke_signed_fixed, Address, AnchorAccount, AnchorDeserialize, AnchorSerialize,
-        CpiContext, CpiHandle, CpiHandleBuffer, CpiHandleMut, Discriminator, Owner,
-        ToCpiAccounts, ToCpiHandle, ToCpiHandleMut,
+        CpiContext, CpiHandle, CpiHandleBuffer, CpiHandleMut, Discriminator, Owner, ToCpiAccounts, ToCpiHandle,
+        ToCpiHandleMut, MAX_ACCOUNT_METAS,
     },
     bytemuck::{Pod, Zeroable},
     pinocchio::instruction::InstructionAccount,
@@ -365,6 +365,19 @@ fn fixed_invoke_rejects_address_mismatch() {
 }
 
 #[test]
+fn fixed_invoke_rejects_more_than_inline_account_budget() {
+    let buffer = account_view([1; 32], false);
+    let view = unsafe { buffer.view() };
+    let handle = CpiHandle::readonly(&view);
+    let metas = core::array::from_fn(|_| InstructionAccount::new(handle.address(), false, false));
+    let handles = [handle; MAX_ACCOUNT_METAS + 1];
+
+    let err = unchecked_invoke_signed_fixed(&ID, &[], &metas, &handles, &[]).unwrap_err();
+
+    assert_eq!(err, ProgramError::InvalidArgument);
+}
+
+#[test]
 fn fixed_invoke_accepts_matching_readonly_handle() {
     let buffer = account_view([1; 32], false);
     let view = unsafe { buffer.view() };
@@ -486,7 +499,6 @@ fn invoke_remaining_pda_as_signer_with_seeds() {
     assert!(remaining_accounts
         .try_push(CpiHandle::readonly(&remaining_view).as_signer())
         .is_ok());
-
     CpiContext::new_with_signer(&program, accounts, &[&[b"pda", &[7]]])
         .with_remaining_accounts(remaining_accounts)
         .invoke(&[])
@@ -796,4 +808,18 @@ fn unchecked_handle_api_is_available() {
     };
 
     unsafe { program::invoke_unchecked(&ix, &[]) }.unwrap();
+}
+
+#[test]
+fn optional_sentinel_flags_reject_inline_overflow() {
+    let mut flags = anchor_lang::BoolBuffer::new();
+    for _ in 0..MAX_ACCOUNT_METAS {
+        anchor_lang::try_push_bool(&mut flags, false).unwrap();
+    }
+
+    assert_eq!(
+        anchor_lang::try_push_bool(&mut flags, false),
+        Err(ProgramError::InvalidArgument)
+    );
+    assert_eq!(flags.len(), MAX_ACCOUNT_METAS);
 }

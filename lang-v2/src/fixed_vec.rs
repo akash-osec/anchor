@@ -1,7 +1,8 @@
 //! Small, fixed-capacity vectors for transient on-chain data.
 //!
-//! These buffers deliberately panic on overflow, matching the failure mode of
-//! the old heap-backed `Vec` while keeping the storage inline and bounded.
+//! These buffers provide both compatibility methods that panic on overflow and
+//! fallible methods for runtime paths that must turn capacity exhaustion into a
+//! normal program error.
 
 use core::{
     fmt,
@@ -12,6 +13,7 @@ use core::{
     },
     slice,
 };
+use wincode::len::SeqLen;
 
 pub struct FixedVec<T, const N: usize> {
     data: [MaybeUninit<T>; N],
@@ -104,6 +106,21 @@ impl<T, const N: usize> FixedVec<T, N> {
     }
 
     #[inline]
+    pub fn try_resize(&mut self, len: usize, value: T) -> Result<(), T>
+    where
+        T: Clone,
+    {
+        if len > N {
+            return Err(value);
+        }
+        while self.len < len {
+            self.push(value.clone());
+        }
+        self.truncate(len);
+        Ok(())
+    }
+
+    #[inline]
     pub fn as_slice(&self) -> &[T] {
         unsafe { slice::from_raw_parts(self.data.as_ptr().cast(), self.len) }
     }
@@ -128,7 +145,10 @@ impl<T, const N: usize> FixedVec<T, N> {
     where
         T: Copy,
     {
-        assert!(self.len + values.len() <= N, "fixed vector capacity exceeded");
+        assert!(
+            self.len + values.len() <= N,
+            "fixed vector capacity exceeded"
+        );
         for value in values {
             self.push(*value);
         }
@@ -148,6 +168,20 @@ impl<T, const N: usize> FixedVec<T, N> {
         Ok(())
     }
 
+    /// Converts the buffer to an owned host-side vector. This is intentionally
+    /// unavailable for on-chain builds; instruction construction is a client
+    /// concern and Solana's host instruction type still owns a `Vec`.
+    #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
+    pub fn to_vec(&self) -> std::vec::Vec<T>
+    where
+        T: Clone,
+    {
+        self.as_slice().to_vec()
+    }
+}
+
+impl<T: crate::Space, const N: usize> crate::Space for FixedVec<T, N> {
+    const INIT_SPACE: usize = 4 + T::INIT_SPACE * N;
 }
 
 impl<const N: usize> FixedVec<u8, N> {
@@ -226,7 +260,14 @@ macro_rules! impl_slice_index {
     };
 }
 
-impl_slice_index!(Range<usize>, RangeFrom<usize>, RangeFull, RangeInclusive<usize>, RangeTo<usize>, RangeToInclusive<usize>);
+impl_slice_index!(
+    Range<usize>,
+    RangeFrom<usize>,
+    RangeFull,
+    RangeInclusive<usize>,
+    RangeTo<usize>,
+    RangeToInclusive<usize>
+);
 
 impl<'a, T, const N: usize> IntoIterator for &'a FixedVec<T, N> {
     type Item = &'a T;
@@ -258,5 +299,99 @@ impl<const N: usize> wincode::io::Writer for FixedVec<u8, N> {
     fn write(&mut self, src: &[u8]) -> wincode::io::WriteResult<()> {
         self.try_extend_from_slice(src)
             .map_err(|_| wincode::io::WriteError::WriteSizeLimit(src.len()))
+    }
+}
+
+// Wincode's built-in variable-length sequence implementations are backed by
+// `alloc::vec::Vec`. Keep the same borsh-compatible u32 length prefix for
+// generated on-chain bindings, but store decoded elements in this bounded
+// buffer instead. This is intentionally a separate implementation from the
+// account-oriented `PodVec`: `FixedVec` is transient and may contain types
+// that are not `Pod`.
+unsafe impl<T, const N: usize, C> wincode::SchemaWrite<C> for FixedVec<T, N>
+where
+    C: wincode::config::Config,
+    T: wincode::SchemaWrite<C, Src = T>,
+{
+    type Src = Self;
+
+    fn size_of(value: &Self::Src) -> wincode::WriteResult<usize> {
+        let length = C::LengthEncoding::write_bytes_needed(value.len())?;
+        value
+            .iter()
+            .map(T::size_of)
+            .try_fold(length, |total, size| size.map(|size| total + size))
+    }
+
+    fn write(mut writer: impl wincode::io::Writer, value: &Self::Src) -> wincode::WriteResult<()> {
+        if value.len() > N {
+            return Err(wincode::WriteError::Custom(
+                "fixed vector capacity exceeded",
+            ));
+        }
+        C::LengthEncoding::write(writer.by_ref(), value.len())?;
+        for item in value {
+            T::write(writer.by_ref(), item)?;
+        }
+        Ok(())
+    }
+}
+
+unsafe impl<'de, T, const N: usize, C> wincode::SchemaRead<'de, C> for FixedVec<T, N>
+where
+    C: wincode::config::Config,
+    T: wincode::SchemaRead<'de, C, Dst = T>,
+{
+    type Dst = Self;
+
+    fn read(
+        mut reader: impl wincode::io::Reader<'de>,
+        dst: &mut MaybeUninit<Self::Dst>,
+    ) -> wincode::ReadResult<()> {
+        let length = C::LengthEncoding::read(reader.by_ref())?;
+        if length > N {
+            return Err(wincode::ReadError::Custom("fixed vector capacity exceeded"));
+        }
+        let mut value = Self::new();
+        for _ in 0..length {
+            value.push(T::get(reader.by_ref())?);
+        }
+        dst.write(value);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FixedVec;
+
+    #[test]
+    fn borsh_sequence_round_trips_without_heap_storage() {
+        let mut values = FixedVec::<u16, 4>::new();
+        values.extend([10, 20, 30]);
+        let encoded = wincode::config::serialize(&values, crate::BORSH_CONFIG).unwrap();
+        assert_eq!(encoded, [3, 0, 0, 0, 10, 0, 20, 0, 30, 0]);
+
+        let decoded: FixedVec<u16, 4> =
+            wincode::config::deserialize(&encoded, crate::BORSH_CONFIG).unwrap();
+        assert_eq!(decoded.as_slice(), &[10, 20, 30]);
+    }
+
+    #[test]
+    fn borsh_sequence_rejects_capacity_overflow() {
+        let encoded = [5, 0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0];
+        let result = wincode::config::deserialize::<FixedVec<u16, 4>, _>(
+            &encoded,
+            crate::BORSH_CONFIG,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bounded_push_reports_capacity_without_panicking() {
+        let mut values = FixedVec::<u8, 1>::new();
+        assert!(values.try_push(1).is_ok());
+        assert_eq!(values.try_push(2), Err(2));
+
     }
 }
