@@ -1,8 +1,6 @@
 //! Examples for account-wrapper types that sit outside the constraints,
-//! seeds, and CPI suites: Sysvar, SystemAccount, and bare
-//! UncheckedAccount values.
-
-extern crate alloc;
+//! seeds, and CPI suites: Sysvar, SystemAccount, and bare UncheckedAccount
+//! values.
 
 use {
     anchor_lang::{
@@ -14,6 +12,12 @@ use {
     pinocchio::sysvars::{clock::Clock, rent::Rent},
     solana_program_error::ProgramError,
 };
+
+// Keep exercising the legacy heap-backed wrapper on host builds. The SBF
+// fixture uses the underlying account type directly because `Box<T>` is
+// intentionally unavailable on allocator-free targets.
+#[cfg(any(target_os = "solana", target_arch = "bpf"))]
+type Box<T> = T;
 
 declare_id!("Acc1111111111111111111111111111111111111111");
 
@@ -62,9 +66,9 @@ pub struct PlainReprC {
     pub value: u64,
 }
 
-/// Plain instruction-argument struct used by the IDL tests. It is a
-/// user-defined type, not an account wrapper, so it remains after removing
-/// account-wrapper support.
+/// Plain instruction-argument struct — not an account, not an event. The
+/// `IdlType` derive is what lets the idl-build arg-type walk resolve it
+/// (`IdlAccountType`); without it `--features idl-build` fails to compile.
 #[derive(Clone, Copy, IdlType, anchor_lang::AnchorDeserialize, anchor_lang::AnchorSerialize)]
 pub struct BumpArgs {
     pub amount: u64,
@@ -85,7 +89,7 @@ type LedgerAccount = Slab<Ledger, LedgerEntry>;
 pub mod accounts_test {
     use super::*;
 
-    /// Initializes the canonical counter.
+    /// Initializes the canonical counter used by the account handlers.
     #[discrim = 0]
     pub fn initialize(ctx: &mut Context<Initialize>) -> Result<()> {
         ctx.accounts.counter.value = 1;
@@ -791,9 +795,6 @@ pub mod accounts_test {
         Ok(())
     }
 
-    /// Bumps the counter by a caller-provided amount passed in a plain
-    /// `#[derive(IdlType)]` struct, so the idl-build pass exercises the
-    /// instruction-arg `IdlAccountType` walk on a user-defined type.
     /// Manually closes a slab-backed account even though the account also
     /// carries `close = receiver`; the derive exit path will try to close it
     /// again after `is_mutable` was flipped by the first close.
@@ -828,9 +829,9 @@ pub struct InitializeWithLaterSeed {
 
 #[derive(Accounts)]
 pub struct InitializeTargetBeforePayer {
-    #[account(init, payer = payer)]
+    #[account(init, payer = payer, unsafe(dup))]
     pub counter: Account<Counter>,
-    #[account(mut)]
+    #[account(mut, unsafe(dup))]
     pub payer: Signer,
     pub system_program: Program<System>,
 }
