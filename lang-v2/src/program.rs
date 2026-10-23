@@ -374,7 +374,7 @@ fn signers<'seeds>(signer_seeds: &'seeds [&'seeds [&'seeds [u8]]]) -> Vec<Signer
 
 pub(crate) fn cpi_accounts<'a>(
     account_handles: &[CpiHandle<'a>],
-) -> Result<crate::CpiAccountBuffer<'a>, ProgramError> {
+) -> Result<crate::CpiAccountBuffer<'a, { pinocchio::MAX_TX_ACCOUNTS }>, ProgramError> {
     let mut accounts = crate::CpiAccountBuffer::new();
     for handle in account_handles {
         let mut slot = MaybeUninit::uninit();
