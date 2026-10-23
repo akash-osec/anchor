@@ -1,12 +1,16 @@
 //! Lazy cursor over the serialized instruction input buffer.
 //!
 //! [`AccountCursor`] yields `AccountView`s on demand so dispatch can
-//! happen first and each arm walks only its declared accounts. A
-//! caller-provided `lookup` array resolves duplicate account references:
-//! when the BPF loader writes a dup index into `borrow_state`, the cursor
-//! returns the earlier `AccountView` from `lookup[idx]`.
+//! happen first and each arm walks only its declared accounts. The runtime
+//! path resolves duplicate account references by rescanning the compact
+//! serialized input, so the entrypoint does not reserve a 256-element
+//! `AccountView` lookup array on the stack. The legacy lookup-backed path is
+//! retained for low-level callers and existing tests.
 
-use pinocchio::account::{AccountView, RuntimeAccount, MAX_PERMITTED_DATA_INCREASE};
+use {
+    core::mem::MaybeUninit,
+    pinocchio::account::{AccountView, RuntimeAccount, MAX_PERMITTED_DATA_INCREASE},
+};
 
 /// Sentinel value in the serialized `borrow_state` byte indicating a
 /// non-duplicated account. Any other value (0..=254) indicates a
@@ -22,6 +26,12 @@ const STATIC_ACCOUNT_DATA: usize =
 /// 8-byte alignment required between account records on BPF.
 const BPF_ALIGN_OF_U128: usize = 8;
 
+/// Marker stored in the otherwise-unused padding of a duplicate record once
+/// the cursor has consumed it. The loader's `borrow_state` byte is reused by
+/// `AccountView` as the live borrow counter, so it cannot be used later to
+/// recover the duplicate index during a lazy remaining-account walk.
+const DUPLICATE_METADATA_MASK: u32 = 0x8000_0000;
+
 /// Cursor into the serialized instruction input buffer.
 ///
 /// Advances a raw pointer past one account record per [`next`](AccountCursor::next)
@@ -32,24 +42,29 @@ const BPF_ALIGN_OF_U128: usize = 8;
 /// Created from the runtime's input pointer (r1). Must not outlive the
 /// entrypoint invocation. Callers must ensure:
 ///
-/// - `lookup` points to `[AccountView; N]` where `N >= max(consumed + 1,
-///   max_dup_index + 1)`. In practice: a `[MaybeUninit<AccountView>; 256]`
-///   allocated once in the dispatcher frame.
+/// - The lookup pointer passed to [`AccountCursor::new`] points to
+///   `[AccountView; N]` where `N >= max(consumed + 1, max_dup_index + 1)`.
+///   The runtime entrypoint should use [`AccountCursor::new_without_lookup`]
+///   instead, which avoids this stack allocation.
 /// - `next()` is called fewer than `num_accounts` times.
 pub struct AccountCursor {
     /// Current position in the input buffer. Advances on each `next()`.
     ptr: *mut u8,
 
     /// Pointer to the caller's `[AccountView; N]` lookup array.
-    /// Indexed by `consumed` on write and by the serialized dup index
-    /// on read (for duplicate resolution).
+    /// Indexed by `consumed` on write and by the serialized dup index on read
+    /// (for duplicate resolution). A null pointer selects the compact
+    /// input-rescanning path used by generated entrypoints.
     lookup: *mut AccountView,
+
+    /// Start of the serialized account records. Used by the compact duplicate
+    /// resolver when `lookup` is null.
+    input_start: *mut u8,
 
     /// Number of accounts yielded so far. Used both as the write index
     /// into `lookup` and as a runtime counter exposed to callers for
     /// bookkeeping (e.g., remaining-accounts walks).
     consumed: u8,
-
 }
 impl AccountCursor {
     /// Create a fresh cursor at the start of the serialized accounts
@@ -62,38 +77,29 @@ impl AccountCursor {
     /// See type-level safety notes.
     #[inline(always)]
     pub unsafe fn new(input_ptr: *mut u8, lookup: *mut AccountView) -> Self {
+        let input_start = input_ptr.add(core::mem::size_of::<u64>());
         Self {
-            ptr: input_ptr.add(core::mem::size_of::<u64>()),
+            ptr: input_start,
             lookup,
+            input_start,
             consumed: 0,
         }
+    }
+
+    /// Create a cursor without reserving a transaction-wide account lookup
+    /// table. Duplicate records are resolved by scanning the serialized input
+    /// only when a duplicate is encountered. This keeps the common no-dup path
+    /// allocation-free and bounds the entrypoint frame by the current
+    /// instruction's declared account count instead of 256 accounts.
+    #[inline(always)]
+    pub unsafe fn new_without_lookup(input_ptr: *mut u8) -> Self {
+        Self::new(input_ptr, core::ptr::null_mut())
     }
 
     /// Number of accounts yielded from this cursor so far.
     #[inline(always)]
     pub fn consumed(&self) -> u8 {
         self.consumed
-    }
-
-    /// Returns views already written to the cursor's lookup table.
-    ///
-    /// The caller must only request entries that have already been yielded by
-    /// [`Self::next`]. This lets callers borrow the resolved accounts without
-    /// copying them into another fixed-capacity buffer.
-    #[inline(always)]
-    ///
-    /// # Safety
-    ///
-    /// The returned lifetime must not outlive the lookup table supplied when
-    /// this cursor was created. The dispatcher guarantees that table remains
-    /// alive for the complete instruction.
-    pub(crate) unsafe fn views<'lookup>(&self, start: u8, len: u8) -> &'lookup [AccountView] {
-        // SAFETY: `start..start + len` was populated by previous `next` calls
-        // and the dispatcher-provided lookup table remains live for the
-        // duration of the instruction.
-        unsafe {
-            core::slice::from_raw_parts(self.lookup.add(start as usize), len as usize)
-        }
     }
 
     /// Walk N accounts in a tight loop, storing views in the lookup array.
@@ -111,6 +117,68 @@ impl AccountCursor {
             self.next();
         }
         core::slice::from_raw_parts(self.lookup.add(start), n)
+    }
+
+    /// Walk N accounts into caller-provided storage. Generated dispatch uses
+    /// this method so the entrypoint frame is sized to the instruction's
+    /// declared account header rather than a transaction-wide lookup table.
+    #[inline(always)]
+    pub unsafe fn walk_n_into<'views>(
+        &mut self,
+        n: usize,
+        output: &'views mut [MaybeUninit<AccountView>],
+    ) -> &'views [AccountView] {
+        debug_assert!(output.len() >= n);
+        for slot in output.iter_mut().take(n) {
+            slot.write(self.next());
+        }
+        core::slice::from_raw_parts(output.as_ptr() as *const AccountView, n)
+    }
+
+    /// Locate the raw account record for a serialized slot. Duplicate slots
+    /// occupy only the eight-byte duplicate header, while ordinary records
+    /// include their data and alignment padding.
+    #[inline(always)]
+    unsafe fn raw_account_at(&self, index: u8) -> *mut RuntimeAccount {
+        let mut ptr = self.input_start;
+        let mut current = 0u8;
+        while current < index {
+            let account = ptr as *mut RuntimeAccount;
+            ptr = ptr.add(core::mem::size_of::<u64>());
+            let padding = u32::from_le_bytes((*account).padding);
+            if padding & DUPLICATE_METADATA_MASK == 0 {
+                ptr = ptr.add(STATIC_ACCOUNT_DATA + (*account).data_len as usize);
+                let addr = ptr.addr();
+                let aligned = (addr + (BPF_ALIGN_OF_U128 - 1)) & !(BPF_ALIGN_OF_U128 - 1);
+                ptr = ptr.add(aligned - addr);
+            }
+            current = current.wrapping_add(1);
+        }
+        ptr as *mut RuntimeAccount
+    }
+
+    /// Resolve a duplicate index to its original non-duplicate account. The
+    /// index chain is strictly decreasing by the loader contract, so the loop
+    /// is bounded by the transaction's u8 account-index domain.
+    #[inline(always)]
+    unsafe fn resolve_without_lookup(&self, index: u8) -> AccountView {
+        let mut target = index;
+        loop {
+            let account = self.raw_account_at(target);
+            let padding = u32::from_le_bytes((*account).padding);
+            if padding & DUPLICATE_METADATA_MASK == 0 {
+                (*account).padding = u32::to_le_bytes((*account).data_len as u32);
+                return AccountView::new_unchecked(account);
+            }
+            target = (padding & !DUPLICATE_METADATA_MASK) as u8;
+        }
+    }
+
+    /// Resolve an account by serialized index without materializing a
+    /// transaction-wide view table.
+    #[inline(always)]
+    pub(crate) unsafe fn view_at(&self, index: u8) -> AccountView {
+        self.resolve_without_lookup(index)
     }
 
     /// Advance past one account record and return its `AccountView`.
@@ -160,15 +228,26 @@ impl AccountCursor {
             self.ptr = self.ptr.add(aligned - addr);
             AccountView::new_unchecked(account)
         } else {
+            // Preserve the duplicate index before any AccountView borrow can
+            // repurpose `borrow_state` as its live borrow counter. The
+            // duplicate slot is only eight bytes wide, so its four-byte
+            // padding field is safe scratch storage for this metadata.
+            (*account).padding = u32::to_le_bytes(DUPLICATE_METADATA_MASK | borrow_state as u32);
             // Duplicate: look up the earlier slot. Safe because the
             // runtime only emits dup indices that are strictly less
             // than the current `consumed`, so the slot is already
             // populated by a prior `next()` call.
-            *self.lookup.add(borrow_state as usize)
+            if self.lookup.is_null() {
+                self.resolve_without_lookup(borrow_state)
+            } else {
+                *self.lookup.add(borrow_state as usize)
+            }
         };
 
         // Record this view so later dup references can resolve it.
-        *self.lookup.add(self.consumed as usize) = view;
+        if !self.lookup.is_null() {
+            *self.lookup.add(self.consumed as usize) = view;
+        }
         self.consumed = self.consumed.wrapping_add(1);
         view
     }
