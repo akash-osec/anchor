@@ -1,4 +1,3 @@
-use anchor_lang::__idl::{string::String, vec::Vec};
 use anchor_lang::prelude::*;
 
 declare_id!("BF748KR4UhPq7xbhFQYd7yFKmh5UYdqed9GbD6oZvEyu");
@@ -6,8 +5,8 @@ declare_program!(return_spoof);
 
 pub const RETURN_SEED: &[u8] = b"return-store";
 
-type ReturnString = anchor_lang::FixedVec<u8, { anchor_lang::MAX_IDL_SEQUENCE }>;
-type ReturnVec<T> = anchor_lang::FixedVec<T, { anchor_lang::MAX_IDL_SEQUENCE }>;
+type ReturnString = anchor_lang::FixedVec<u8, 14>;
+type ReturnVec<T> = anchor_lang::FixedVec<T, 2>;
 
 #[account]
 #[repr(C)]
@@ -73,13 +72,15 @@ pub mod return_callee {
         ctx.accounts.data.last_base = base;
         ctx.accounts.data.last_result = amount;
         let mut samples = ReturnVec::new();
-        samples.try_push(bonus).expect("return samples capacity");
+        samples
+            .try_push(bonus)
+            .map_err(|_| Error::InvalidInstructionData)?;
         samples
             .try_push(ctx.accounts.data.calls)
-            .expect("return samples capacity");
+            .map_err(|_| Error::InvalidInstructionData)?;
         Ok(ReturnPayload {
             amount,
-            label: return_label(b"return-payload"),
+            label: return_label(b"return-payload")?,
             samples,
             maybe_authority: Some(*ctx.accounts.authority.address()),
         })
@@ -116,7 +117,10 @@ pub mod return_callee {
         let cpi_accounts = return_spoof::cpi::accounts::Spoof {
             data: ctx.accounts.data.cpi_handle(),
         };
-        let cpi_ctx = CpiContext::<_, 16>::new_with_capacity(ctx.accounts.spoof_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 16>::new_with_capacity(
+            ctx.accounts.spoof_program.address(),
+            cpi_accounts,
+        );
         let _ = return_spoof::cpi::spoof(cpi_ctx, base)?;
         Ok(())
     }
@@ -158,12 +162,12 @@ pub mod return_callee {
     }
 }
 
-fn return_label(value: &[u8]) -> ReturnString {
+fn return_label(value: &[u8]) -> Result<ReturnString> {
     let mut label = ReturnString::new();
     label
         .try_extend_from_slice(value)
-        .expect("return label capacity");
-    label
+        .map_err(|_| Error::InvalidInstructionData)?;
+    Ok(label)
 }
 
 #[derive(Accounts)]

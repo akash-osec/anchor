@@ -149,7 +149,8 @@ idl-build = []
                 for snippet in snippets {
                     assert!(
                         rendered.contains(snippet),
-                        "{} output did not contain {snippet:?}\n\nstdout:\n{stdout}\n\nstderr:\n{stderr}",
+                        "{} output did not contain \
+                         {snippet:?}\n\nstdout:\n{stdout}\n\nstderr:\n{stderr}",
                         self.name
                     );
                 }
@@ -252,7 +253,10 @@ fn declare_program_rejects_executable_const_generic_values() {
     declare_program_compile_fail_case(
         "declare_program_executable_const_generic",
         idl,
-        &["expected an IDL const generic integer literal; executable Rust expressions are not allowed"],
+        &[
+            "expected an IDL const generic integer literal; executable Rust expressions are not \
+             allowed",
+        ],
     );
 }
 
@@ -850,9 +854,7 @@ pub struct Bad {
         "anchor-spl = {{ path = \"{}\", features = [\"guardrails\"] }}",
         spl.display()
     ))
-    .expect_fail(&[
-        "SPL init constraint `mint::authority` needs an AccountView, not a pubkey",
-    ]);
+    .expect_fail(&["SPL init constraint `mint::authority` needs an AccountView, not a pubkey"]);
 
     CompileCase::new(
         "namespaced_constraint_init_const_freeze_authority_rejected",
@@ -926,9 +928,7 @@ pub struct Bad {
         "anchor-spl = {{ path = \"{}\", features = [\"guardrails\"] }}",
         spl.display()
     ))
-    .expect_fail(&[
-        "SPL init constraint `mint::token_program` needs an AccountView, not a pubkey",
-    ]);
+    .expect_fail(&["SPL init constraint `mint::token_program` needs an AccountView, not a pubkey"]);
 
     CompileCase::new(
         "namespaced_constraint_init_const_token_mint_rejected",
@@ -955,9 +955,7 @@ pub struct Bad {
         "anchor-spl = {{ path = \"{}\", features = [\"guardrails\"] }}",
         spl.display()
     ))
-    .expect_fail(&[
-        "SPL init constraint `token::mint` needs an AccountView, not a pubkey",
-    ]);
+    .expect_fail(&["SPL init constraint `token::mint` needs an AccountView, not a pubkey"]);
 
     CompileCase::new(
         "namespaced_constraint_init_const_token_authority_rejected",
@@ -988,9 +986,7 @@ pub struct Bad {
         "anchor-spl = {{ path = \"{}\", features = [\"guardrails\"] }}",
         spl.display()
     ))
-    .expect_fail(&[
-        "SPL init constraint `token::authority` needs an AccountView, not a pubkey",
-    ]);
+    .expect_fail(&["SPL init constraint `token::authority` needs an AccountView, not a pubkey"]);
 
     CompileCase::new(
         "namespaced_constraint_init_const_token_token_program_rejected",
@@ -1063,9 +1059,7 @@ pub struct Bad {
         "anchor-spl = {{ path = \"{}\", features = [\"guardrails\"] }}",
         spl.display()
     ))
-    .expect_fail(&[
-        "SPL init constraint `mint::authority` needs an AccountView, not a pubkey",
-    ]);
+    .expect_fail(&["SPL init constraint `mint::authority` needs an AccountView, not a pubkey"]);
 }
 
 #[test]
@@ -1877,7 +1871,7 @@ declare_program!(bad);
 pub fn use_declared_types(
     value: bad::ObjectTuple,
     variant: bad::ObjectEnum,
-) -> std::vec::Vec<u8> {
+) -> anchor_lang::__alloc::vec::Vec<u8> {
     let bad::ObjectTuple(bytes, maybe) = value;
     let _ = maybe;
     match variant {
@@ -2860,8 +2854,10 @@ pub mod defined_args {
 
 #[test]
 fn idl_build_rejects_arg_struct_without_idl_type_derive() {
-    let source =
-        DEFINED_ARGS_PROGRAM.replace("DERIVE_LIST", "anchor_lang::AnchorDeserialize, anchor_lang::AnchorSerialize");
+    let source = DEFINED_ARGS_PROGRAM.replace(
+        "DERIVE_LIST",
+        "anchor_lang::AnchorDeserialize, anchor_lang::AnchorSerialize",
+    );
     CompileCase::new("idl_build_arg_struct_missing_idl_type", &source)
         .features(&["idl-build"])
         .check_tests()

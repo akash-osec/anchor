@@ -16,25 +16,7 @@ pub mod __idl {
 }
 
 #[doc(hidden)]
-#[cfg(all(
-    any(target_os = "solana", target_arch = "bpf"),
-    feature = "alloc"
-))]
-pub mod __idl {
-    pub mod string {
-        pub use alloc::string::String;
-    }
-
-    pub mod vec {
-        pub use alloc::vec::Vec;
-    }
-}
-
-#[doc(hidden)]
-#[cfg(all(
-    any(target_os = "solana", target_arch = "bpf"),
-    not(feature = "alloc")
-))]
+#[cfg(any(target_os = "solana", target_arch = "bpf"))]
 pub mod __idl {
     pub mod string {
         pub type String = crate::FixedVec<u8, { crate::MAX_IDL_SEQUENCE }>;
@@ -82,7 +64,18 @@ macro_rules! impl_leaf_idl_types {
 }
 
 impl_leaf_idl_types!(
-    (), bool, u8, u16, u32, u64, u128, i8, i16, i32, i64, i128,
+    (),
+    bool,
+    u8,
+    u16,
+    u32,
+    u64,
+    u128,
+    i8,
+    i16,
+    i32,
+    i64,
+    i128,
     crate::Address,
 );
 

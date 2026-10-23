@@ -12,8 +12,8 @@ use {
         },
         testing::{AccountBuffer, MIN_ACCOUNT_BUF},
         unchecked_invoke_signed_fixed, Address, AnchorAccount, AnchorDeserialize, AnchorSerialize,
-        CpiContext, CpiHandle, CpiHandleBuffer, CpiHandleMut, Discriminator, Owner,
-        ToCpiAccounts, ToCpiHandle, ToCpiHandleMut,
+        CpiContext, CpiHandle, CpiHandleBuffer, CpiHandleMut, Discriminator, Owner, ToCpiAccounts,
+        ToCpiHandle, ToCpiHandleMut,
     },
     bytemuck::{Pod, Zeroable},
     pinocchio::instruction::InstructionAccount,
@@ -308,6 +308,164 @@ fn checked_invoke_preserves_real_program_id_account_before_duplicate_address() {
 }
 
 #[test]
+fn checked_invoke_matches_nonconsecutive_optional_sentinels() {
+    let first_buffer = account_view([1; 32], false);
+    let sentinel_buffer = account_view([7; 32], false);
+    let last_buffer = account_view([2; 32], false);
+    let first = unsafe { first_buffer.view() };
+    let sentinel = unsafe { sentinel_buffer.view() };
+    let last = unsafe { last_buffer.view() };
+    let ix = Instruction {
+        program_id: ID,
+        accounts: vec![
+            AccountMeta::new_readonly(ID, false),
+            AccountMeta::new_readonly(*first.address(), false),
+            AccountMeta::new_readonly(ID, false),
+            AccountMeta::new_readonly(*last.address(), false),
+        ],
+        data: vec![],
+    };
+    let handles = [
+        first.to_cpi_handle(),
+        sentinel.to_cpi_handle(),
+        last.to_cpi_handle(),
+    ];
+
+    // The first sentinel must be skipped so the required first account can
+    // bind. The later optional slot is present and has the program-id address.
+    program::invoke_with_optional_sentinels(&ix, &handles, &[true, false, true, false]).unwrap();
+}
+
+#[test]
+fn optional_binding_matches_exhaustive_small_sequences() {
+    let program_buffer = account_view([7; 32], false);
+    let other_buffer = account_view([8; 32], false);
+    let program_view = unsafe { program_buffer.view() };
+    let other_view = unsafe { other_buffer.view() };
+    let available = [program_view.to_cpi_handle(), other_view.to_cpi_handle()];
+
+    // Enumerate the grammar independently: each optional meta is either
+    // present or absent, and every required meta remains in wire order.
+    for meta_count in 0..=3u32 {
+        for encoded_metas in 0..3usize.pow(meta_count) {
+            let kinds: Vec<_> = (0..meta_count)
+                .map(|i| (encoded_metas / 3usize.pow(i)) % 3)
+                .collect();
+            let flags: Vec<_> = kinds.iter().map(|kind| *kind == 0).collect();
+            let ix = Instruction {
+                program_id: ID,
+                accounts: kinds
+                    .iter()
+                    .map(|kind| {
+                        AccountMeta::new_readonly(
+                            if *kind == 2 {
+                                *other_view.address()
+                            } else {
+                                ID
+                            },
+                            false,
+                        )
+                    })
+                    .collect(),
+                data: vec![],
+            };
+            for handle_count in 0..=3 {
+                for encoded_handles in 0..1usize << handle_count {
+                    let mut handles = CpiHandleBuffer::<3>::new();
+                    for i in 0..handle_count {
+                        assert!(handles
+                            .try_push(available[(encoded_handles >> i) & 1])
+                            .is_ok());
+                    }
+                    let possible = (0..1usize << meta_count).any(|skipped| {
+                        if kinds
+                            .iter()
+                            .enumerate()
+                            .any(|(i, kind)| *kind != 0 && skipped & (1 << i) != 0)
+                        {
+                            return false;
+                        }
+                        ix.accounts
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| skipped & (1 << i) == 0)
+                            .map(|(_, meta)| &meta.pubkey)
+                            .eq(handles.iter().map(CpiHandle::address))
+                    });
+                    assert_eq!(
+                        program::invoke_with_optional_sentinels(&ix, &handles, flags.as_slice(),)
+                            .is_ok(),
+                        possible,
+                        "metas={kinds:?}, handles={encoded_handles:b}/{handle_count}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn many_ambiguous_sentinels_reject_missing_required_address() {
+    let program_buffer = account_view([7; 32], false);
+    let program_view = unsafe { program_buffer.view() };
+    let mut metas = vec![AccountMeta::new_readonly(ID, false); 48];
+    metas.push(AccountMeta::new_readonly(
+        Address::new_from_array([8; 32]),
+        false,
+    ));
+    let mut flags = vec![true; 48];
+    flags.push(false);
+    let ix = Instruction {
+        program_id: ID,
+        accounts: metas,
+        data: vec![],
+    };
+    let handles = [program_view.to_cpi_handle(); 24];
+
+    // Backtracking over optional choices makes this invalid input exponential.
+    // Reachability must reject it without enumerating combinations.
+    assert_eq!(
+        program::invoke_with_optional_sentinels(&ix, &handles, flags.as_slice()),
+        Err(ProgramError::InvalidArgument)
+    );
+}
+
+#[test]
+fn checked_invoke_reserves_matching_handle_for_required_program_account() {
+    let first_buffer = account_view([7; 32], false);
+    let second_buffer = account_view([1; 32], false);
+    let third_buffer = account_view([7; 32], false);
+    let last_buffer = account_view([2; 32], false);
+    let first = unsafe { first_buffer.view() };
+    let second = unsafe { second_buffer.view() };
+    let third = unsafe { third_buffer.view() };
+    let last = unsafe { last_buffer.view() };
+    let ix = Instruction {
+        program_id: ID,
+        accounts: vec![
+            AccountMeta::new_readonly(ID, false),
+            AccountMeta::new_readonly(ID, false),
+            AccountMeta::new_readonly(*second.address(), false),
+            AccountMeta::new_readonly(ID, false),
+            AccountMeta::new_readonly(*last.address(), false),
+        ],
+        data: vec![],
+    };
+    let handles = [
+        first.to_cpi_handle(),
+        second.to_cpi_handle(),
+        third.to_cpi_handle(),
+        last.to_cpi_handle(),
+    ];
+
+    // The first optional slot initially looks consumable, but the required
+    // program-id account needs that handle. The matcher must reserve it for
+    // the required slot and bind the later optional slot instead.
+    program::invoke_with_optional_sentinels(&ix, &handles, &[true, false, false, true, false])
+        .unwrap();
+}
+
+#[test]
 fn checked_invoke_accepts_real_program_id_account_before_later_accounts() {
     let first_buffer = account_view([1; 32], false);
     let middle_buffer = account_view([7; 32], false);
@@ -541,7 +699,9 @@ fn invoke_ix_accepts_optional_none_program_id_sentinel() {
         data: vec![],
     };
 
-    CpiContext::<_, 3>::new_with_capacity(&program, accounts).invoke_ix(ix).unwrap();
+    CpiContext::<_, 3>::new_with_capacity(&program, accounts)
+        .invoke_ix(ix)
+        .unwrap();
 }
 
 #[test]
@@ -559,7 +719,9 @@ fn cpi_context_invoke_accepts_real_program_id_account_before_later_accounts() {
         third: third.to_cpi_handle(),
     };
 
-    CpiContext::<_, 3>::new_with_capacity(&program, accounts).invoke(&[]).unwrap();
+    CpiContext::<_, 3>::new_with_capacity(&program, accounts)
+        .invoke(&[])
+        .unwrap();
 }
 
 #[test]
@@ -684,6 +846,20 @@ fn cpi_context_capacity_overflow_is_fallible() {
 }
 
 #[test]
+fn signer_capacity_overflow_is_fallible() {
+    let ix = Instruction {
+        program_id: ID,
+        accounts: vec![],
+        data: vec![],
+    };
+    let handles: [CpiHandle<'_>; 0] = [];
+
+    let err = program::invoke_signed(&ix, &handles, &[&[b"pda"]]).unwrap_err();
+
+    assert_eq!(err, ProgramError::InvalidArgument);
+}
+
+#[test]
 fn invoke_ix_rejects_live_borrow_for_writable_meta() {
     let program = ID;
     let buffer = account_view([1; 32], true);
@@ -723,7 +899,9 @@ fn invoke_ix_accepts_mutable_slab_handle() {
         data: vec![],
     };
 
-    CpiContext::<_, 3>::new_with_capacity(&program, accounts).invoke_ix(ix).unwrap();
+    CpiContext::<_, 3>::new_with_capacity(&program, accounts)
+        .invoke_ix(ix)
+        .unwrap();
 }
 
 #[test]
@@ -742,7 +920,9 @@ fn invoke_ix_accepts_readonly_slab_handle_from_mutable_wrapper() {
         data: vec![],
     };
 
-    CpiContext::<_, 3>::new_with_capacity(&program, accounts).invoke_ix(ix).unwrap();
+    CpiContext::<_, 3>::new_with_capacity(&program, accounts)
+        .invoke_ix(ix)
+        .unwrap();
 }
 
 #[test]
@@ -783,7 +963,9 @@ fn invoke_ix_accepts_mutable_borsh_handle() {
             accounts: vec![AccountMeta::new(address, false)],
             data: vec![],
         };
-        CpiContext::<_, 3>::new_with_capacity(&program, accounts).invoke_ix(ix).unwrap();
+        CpiContext::<_, 3>::new_with_capacity(&program, accounts)
+            .invoke_ix(ix)
+            .unwrap();
     }
 
     acct.reacquire_borrow_mut().unwrap();

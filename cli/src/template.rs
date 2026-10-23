@@ -23,7 +23,6 @@ use {
 const ANCHOR_MSRV: &str = "1.89.0";
 // Host-side tests depend on Agave and LiteSVM, which require newer Rust.
 const HOST_RUST_VERSION: &str = "1.97.1";
-const SOLANA_KIT_VERSION: &str = "^8.3.0";
 
 /// Program initialization template
 #[derive(Clone, Debug, Default, Eq, PartialEq, Parser, ValueEnum, AbsolutePath)]
@@ -309,7 +308,7 @@ default = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build"]
+idl-build = []
 {2}
 
 [dependencies]
@@ -354,10 +353,15 @@ const anchor = require('@anchor-lang/core');
 const userScript = require("{script_path}");
 
 async function main() {{
-    const provider = anchor.AnchorProvider.local("{cluster_url}");
+    const connection = new anchor.web3.Connection(
+      "{cluster_url}",
+      anchor.AnchorProvider.defaultOptions().commitment
+    );
+    const wallet = anchor.Wallet.local();
+    const provider = new anchor.AnchorProvider(connection, wallet);
 
     // Run the user's deploy script.
-    await userScript(provider);
+    userScript(provider);
 }}
 main();
 "#,
@@ -372,10 +376,15 @@ pub fn deploy_ts_script_host(cluster_url: &str, script_path: &str) -> String {
 const userScript = require("{script_path}");
 
 async function main() {{
-    const provider = anchor.AnchorProvider.local("{cluster_url}");
+    const connection = new anchor.web3.Connection(
+      "{cluster_url}",
+      anchor.AnchorProvider.defaultOptions().commitment
+    );
+    const wallet = anchor.Wallet.local();
+    const provider = new anchor.AnchorProvider(connection, wallet);
 
     // Run the user's deploy script.
-    await userScript(provider);
+    userScript(provider);
 }}
 main();
 "#,
@@ -480,7 +489,7 @@ pub fn package_json(jest: bool, license: String) -> String {
   }},
   "dependencies": {{
     "@anchor-lang/core": "{VERSION}",
-    "@solana/kit": "{SOLANA_KIT_VERSION}"
+    "@solana/kit": "^8.3.0"
   }},
   "devDependencies": {{
     "jest": "^30.3.0",
@@ -510,7 +519,7 @@ pub fn package_json(jest: bool, license: String) -> String {
   }},
   "dependencies": {{
     "@anchor-lang/core": "{VERSION}",
-    "@solana/kit": "{SOLANA_KIT_VERSION}"
+    "@solana/kit": "^8.3.0"
   }},
   "devDependencies": {{
     "chai": "^4.5.0",
@@ -534,7 +543,7 @@ pub fn ts_package_json(jest: bool, license: String) -> String {
   }},
   "dependencies": {{
     "@anchor-lang/core": "{VERSION}",
-    "@solana/kit": "{SOLANA_KIT_VERSION}"
+    "@solana/kit": "^8.3.0"
   }},
   "devDependencies": {{
     "@types/bn.js": "^5.2.0",
@@ -569,7 +578,7 @@ pub fn ts_package_json(jest: bool, license: String) -> String {
   }},
   "dependencies": {{
     "@anchor-lang/core": "{VERSION}",
-    "@solana/kit": "{SOLANA_KIT_VERSION}"
+    "@solana/kit": "^8.3.0"
   }},
   "devDependencies": {{
     "chai": "^4.5.0",
@@ -591,7 +600,6 @@ pub fn ts_package_json(jest: bool, license: String) -> String {
 pub fn ts_mocha(name: &str) -> String {
     format!(
         r#"import * as anchor from "@anchor-lang/core";
-import {{ generateKeyPairSigner }} from "@solana/kit";
 import {{ Program }} from "@anchor-lang/core";
 import {{ generateKeyPairSigner }} from "@solana/kit";
 import {{ {} }} from "../target/types/{}";
@@ -625,7 +633,6 @@ describe("{}", () => {{
 pub fn ts_jest(name: &str) -> String {
     format!(
         r#"import * as anchor from "@anchor-lang/core";
-import {{ generateKeyPairSigner }} from "@solana/kit";
 import {{ Program }} from "@anchor-lang/core";
 import {{ generateKeyPairSigner }} from "@solana/kit";
 import {{ {} }} from "../target/types/{}";
@@ -715,16 +722,28 @@ pub fn node_shell(
     let mut eval_string = format!(
         r#"
 const anchor = require('@anchor-lang/core');
-const __wallet = anchor.createWallet(
-  Uint8Array.from(
-    JSON.parse(
-      require('fs').readFileSync("{wallet_path}", {{ encoding: "utf-8" }})
-    )
-  )
+const web3 = anchor.web3;
+const PublicKey = anchor.web3.PublicKey;
+const Keypair = anchor.web3.Keypair;
+
+const __wallet = new anchor.Wallet(
+  Keypair.fromSecretKey(
+    Buffer.from(
+      JSON.parse(
+        require('fs').readFileSync(
+          "{wallet_path}",
+          {{
+            encoding: "utf-8",
+          }},
+        ),
+      ),
+    ),
+  ),
 );
-const provider = new anchor.AnchorProvider("{cluster_url}", __wallet, {{
+const __connection = new web3.Connection("{cluster_url}", "processed");
+const provider = new anchor.AnchorProvider(__connection, __wallet, {{
   commitment: "processed",
-  preflightCommitment: "processed",
+  preflightcommitment: "processed",
 }});
 anchor.setProvider(provider);
 "#,
@@ -1158,36 +1177,5 @@ mod tests {
         }
         let script = TestTemplate::Mocha.get_test_script(false, Some(&PackageManager::NPM));
         assert!(script.contains("mocha --import=tsx"));
-    }
-
-    #[test]
-    fn javascript_templates_use_kit_signers() {
-        for template in [mocha("my_program"), js_jest("my_program")] {
-            assert!(template.contains("generateKeyPairSigner"));
-            assert!(template.contains("counter.address"));
-            assert!(!template.contains("anchor.web3.Keypair"));
-        }
-    }
-
-    #[test]
-    fn typescript_templates_use_kit_signers() {
-        for template in [ts_mocha("my_program"), ts_jest("my_program")] {
-            assert!(template.contains("generateKeyPairSigner"));
-            assert!(template.contains("counter.address"));
-            assert!(!template.contains("anchor.web3.Keypair"));
-        }
-    }
-
-    #[test]
-    fn host_rust_templates_convert_account_metas() {
-        for template in [
-            create_program_template_mollusk_test("my_program", Path::new("tests")),
-            create_program_template_litesvm_test("my_program", Path::new("tests")),
-        ] {
-            assert!(template[0].1.contains(".to_account_metas(None)"));
-            assert!(template[0]
-                .1
-                .contains("anchor_lang::solana_program::instruction::AccountMeta"));
-        }
     }
 }

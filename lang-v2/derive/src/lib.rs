@@ -14,9 +14,11 @@ use {
     proc_macro2::{Span, TokenStream as TokenStream2},
     quote::quote,
     syn::{
-        parse::{Parse, ParseStream, Parser}, parse_macro_input, spanned::Spanned, Data,
-        parse_quote, DeriveInput, Expr, ExprLit, ExprUnary, Fields, FnArg, GenericParam, Ident,
-        ItemMod, ItemStruct, Lit, LitStr, Meta, Pat, Token, Type, UnOp,
+        parse::{Parse, ParseStream, Parser},
+        parse_macro_input, parse_quote,
+        spanned::Spanned,
+        Data, DeriveInput, Expr, ExprLit, ExprUnary, Fields, FnArg, GenericParam, Ident, ItemMod,
+        ItemStruct, Lit, LitStr, Meta, Pat, Token, Type, UnOp,
     },
 };
 
@@ -59,10 +61,7 @@ pub fn anchor_deserialize(input: TokenStream) -> TokenStream {
     derive_wincode_schema(input, quote!(anchor_lang::wincode::SchemaRead))
 }
 
-fn derive_wincode_schema(
-    input: TokenStream,
-    schema_derive: TokenStream2,
-) -> TokenStream {
+fn derive_wincode_schema(input: TokenStream, schema_derive: TokenStream2) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     quote! {
         #[derive(#schema_derive)]
@@ -172,8 +171,9 @@ fn unsupported_wincode_from_cfg_attr_args(
                 }
             }
             syn::Meta::List(list) if list.path.is_ident("cfg_attr") => {
-                let Ok(nested) = syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
-                    .parse2(list.tokens.clone())
+                let Ok(nested) =
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
+                        .parse2(list.tokens.clone())
                 else {
                     continue;
                 };
@@ -2176,7 +2176,10 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
             "`Accounts` flattened HEADER_SIZE must be <= 255 (duplicate-tracking domain)"
         );
 
-        #[cfg(feature = "idl-build")]
+        #[cfg(all(
+            feature = "idl-build",
+            not(any(target_os = "solana", target_arch = "bpf"))
+        ))]
         #[doc(hidden)]
         impl #name {
             // Runtime-assembled accounts JSON: reads per-wrapper signer /
@@ -2227,8 +2230,8 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !matches!(fields, Fields::Named(_)) {
         return syn::Error::new(
             name.span(),
-            "`#[account]` only supports structs with named fields (tuple and unit structs are \
-             not supported)",
+            "`#[account]` only supports structs with named fields (tuple and unit structs are not \
+             supported)",
         )
         .to_compile_error()
         .into();
@@ -2487,7 +2490,10 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
             const DISCRIMINATOR: &'static [u8] = &[#(#disc_literals),*];
         }
         #account_deserialize_impl
-        #[cfg(feature = "idl-build")]
+        #[cfg(all(
+            feature = "idl-build",
+            not(any(target_os = "solana", target_arch = "bpf"))
+        ))]
         #[doc(hidden)]
         impl anchor_lang::IdlAccountType for #name {
             const __IDL_ACCOUNT_ENTRY: Option<&'static str> = #idl_account_entry;
@@ -2606,12 +2612,9 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
             Err(err) => return err.to_compile_error().into(),
         };
         if !has_repr_c(&input.attrs) {
-            return syn::Error::new(
-                name.span(),
-                "`#[idl(bytemuck)]` requires `#[repr(C)]`",
-            )
-            .to_compile_error()
-            .into();
+            return syn::Error::new(name.span(), "`#[idl(bytemuck)]` requires `#[repr(C)]`")
+                .to_compile_error()
+                .into();
         }
         idl::TypeKind::BytemuckRepr(repr)
     } else {
@@ -2631,35 +2634,28 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
     // generated assertion below ensures the marker is backed by Pod types.
     let empty_disc: [u8; 0] = [];
     let (idl_type_def, field_dep_walkers, idl_validation_tokens) = match &input.data {
-        Data::Struct(data) => {
-            (
-                idl::build_struct_type_def_emission(
-                    &name_str,
-                    &docs,
-                    &data.fields,
-                    type_kind,
-                    &input.generics,
-                ),
-                cfg_field_dep_walkers(&data.fields),
-                wincode_idl_override_tokens_for_fields("`#[derive(IdlType)]`", &data.fields),
-            )
-        }
-        Data::Enum(data) => {
-            (
-                idl::build_enum_type_def_emission(
-                    &name_str,
-                    &docs,
-                    &data.variants,
-                    type_kind,
-                    &input.generics,
-                ),
-                cfg_variant_dep_walkers(&data.variants),
-                wincode_idl_override_tokens_for_variants(
-                    "`#[derive(IdlType)]`",
-                    &data.variants,
-                ),
-            )
-        }
+        Data::Struct(data) => (
+            idl::build_struct_type_def_emission(
+                &name_str,
+                &docs,
+                &data.fields,
+                type_kind,
+                &input.generics,
+            ),
+            cfg_field_dep_walkers(&data.fields),
+            wincode_idl_override_tokens_for_fields("`#[derive(IdlType)]`", &data.fields),
+        ),
+        Data::Enum(data) => (
+            idl::build_enum_type_def_emission(
+                &name_str,
+                &docs,
+                &data.variants,
+                type_kind,
+                &input.generics,
+            ),
+            cfg_variant_dep_walkers(&data.variants),
+            wincode_idl_override_tokens_for_variants("`#[derive(IdlType)]`", &data.variants),
+        ),
         Data::Union(_) => {
             return syn::Error::new(
                 name.span(),
@@ -2696,7 +2692,10 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
 
     TokenStream::from(quote! {
         #(#idl_validation_tokens)*
-        #[cfg(feature = "idl-build")]
+        #[cfg(all(
+            feature = "idl-build",
+            not(any(target_os = "solana", target_arch = "bpf"))
+        ))]
         #[doc(hidden)]
         impl #impl_generics anchor_lang::IdlAccountType for #name #ty_generics #idl_where_clause {
             fn __idl_type_def() -> Option<&'static str> {
@@ -2723,17 +2722,11 @@ fn parse_idl_bytemuck_attr(attrs: &[syn::Attribute]) -> syn::Result<bool> {
                 syn::punctuated::Punctuated::<Meta, Token![,]>::parse_terminated,
             )?,
             _ => {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    "expected `#[idl(bytemuck)]`",
-                ));
+                return Err(syn::Error::new_spanned(attr, "expected `#[idl(bytemuck)]`"));
             }
         };
         if metas.is_empty() {
-            return Err(syn::Error::new_spanned(
-                attr,
-                "expected `#[idl(bytemuck)]`",
-            ));
+            return Err(syn::Error::new_spanned(attr, "expected `#[idl(bytemuck)]`"));
         }
         for meta in metas {
             if !matches!(meta, Meta::Path(ref path) if path.is_ident("bytemuck")) {
@@ -2759,10 +2752,8 @@ fn has_repr_c(attrs: &[syn::Attribute]) -> bool {
         .iter()
         .filter(|attr| attr.path().is_ident("repr"))
         .filter_map(|attr| {
-            attr.parse_args_with(
-                syn::punctuated::Punctuated::<Meta, Token![,]>::parse_terminated,
-            )
-            .ok()
+            attr.parse_args_with(syn::punctuated::Punctuated::<Meta, Token![,]>::parse_terminated)
+                .ok()
         })
         .flatten()
         .any(|meta| matches!(meta, Meta::Path(path) if path.is_ident("C")))
@@ -3352,9 +3343,9 @@ fn instruction_discriminator_validation_tokens(
                 };
                 (
                     format!(
-                        "instruction `{missing_name}` is missing `#[discrim = N]`; all instructions \
-                         in `#[program]` must specify custom discriminators when one instruction \
-                         does"
+                        "instruction `{missing_name}` is missing `#[discrim = N]`; all \
+                         instructions in `#[program]` must specify custom discriminators when one \
+                         instruction does"
                     ),
                     missing_span,
                 )
@@ -4308,7 +4299,10 @@ fn validate_declare_program_literal(
 
     if let Some(array) = ty_value.get("array").and_then(serde_json::Value::as_array) {
         if array.len() != 2 {
-            return Err(syn::Error::new(span, "IDL array constant type must have two elements"));
+            return Err(syn::Error::new(
+                span,
+                "IDL array constant type must have two elements",
+            ));
         }
         let Expr::Array(array_expr) = expr else {
             return Err(invalid_idl_literal(span, "array literal"));
@@ -4702,11 +4696,8 @@ fn gen_declare_program_type_fields(
                         format!("failed to normalize IDL field `{field_name}` type: {err}"),
                     )
                 })?;
-                let ty = declare_idl_type_to_tokens_with_generics(
-                    &ty_value,
-                    span,
-                    const_generic_names,
-                )?;
+                let ty =
+                    declare_idl_type_to_tokens_with_generics(&ty_value, span, const_generic_names)?;
                 let field_ident = Ident::new(&to_snake_case(field_name), span);
                 field_tokens.push(quote! { #visibility #field_ident: #ty, });
                 field_tys.push(ty);
@@ -4726,11 +4717,8 @@ fn gen_declare_program_type_fields(
                         format!("failed to normalize tuple field type for declare_program!: {err}"),
                     )
                 })?;
-                let ty = declare_idl_type_to_tokens_with_generics(
-                    &ty_value,
-                    span,
-                    const_generic_names,
-                )?;
+                let ty =
+                    declare_idl_type_to_tokens_with_generics(&ty_value, span, const_generic_names)?;
                 field_tokens.push(quote! { #visibility #ty });
                 field_tys.push(ty);
             }
@@ -4917,9 +4905,7 @@ fn parse_declare_program_generic_arg(
     let parsed = syn::parse_str::<Expr>(value).map_err(|err| {
         syn::Error::new(
             span,
-            format!(
-                "expected an IDL const generic literal or declared parameter: {err}"
-            ),
+            format!("expected an IDL const generic literal or declared parameter: {err}"),
         )
     })?;
     if let Expr::Path(path) = &parsed {
@@ -4942,13 +4928,17 @@ fn parse_declare_program_generic_arg(
             op: UnOp::Neg(_),
             expr,
             ..
-        }) if matches!(expr.as_ref(), Expr::Lit(ExprLit { lit: Lit::Int(_), .. })) => {
+        }) if matches!(
+            expr.as_ref(),
+            Expr::Lit(ExprLit {
+                lit: Lit::Int(_),
+                ..
+            })
+        ) =>
+        {
             Ok(quote! { #parsed })
         }
-        _ => Err(invalid_idl_literal(
-            span,
-            "const generic integer literal",
-        )),
+        _ => Err(invalid_idl_literal(span, "const generic integer literal")),
     }
 }
 
@@ -5211,9 +5201,7 @@ fn wincode_idl_override_tokens_for_variants(
         .iter()
         .flat_map(|variant| {
             variant.fields.iter().filter_map(move |field| {
-                Some(
-                    unsupported_wincode_idl_attr_error(surface, &field.attrs)?.to_compile_error(),
-                )
+                Some(unsupported_wincode_idl_attr_error(surface, &field.attrs)?.to_compile_error())
             })
         })
         .collect()
@@ -6410,7 +6398,10 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
     // to `None`. Their discriminator lives in `event_header_json` (the
     // `--- IDL begin event ---` payload prefix), not in `__IDL_TYPE_DEF`.
     let idl_account_type_impl = quote! {
-        #[cfg(feature = "idl-build")]
+        #[cfg(all(
+            feature = "idl-build",
+            not(any(target_os = "solana", target_arch = "bpf"))
+        ))]
         #[doc(hidden)]
         impl anchor_lang::IdlAccountType for #name {
             fn __idl_type_def() -> Option<&'static str> {
@@ -7628,11 +7619,13 @@ mod tests {
         let default_generated = impl_accounts(&default_input).to_string();
         assert!(
             default_generated.contains("pub const __ANCHOR_ACCOUNTS_PROGRAM_ID"),
-            "Accounts derive should expose the program id used for optional sentinels and default PDAs: {default_generated}"
+            "Accounts derive should expose the program id used for optional sentinels and default \
+             PDAs: {default_generated}"
         );
         assert!(
             default_generated.contains("crate :: ID"),
-            "unannotated Accounts should default the exposed program id to crate::ID: {default_generated}"
+            "unannotated Accounts should default the exposed program id to crate::ID: \
+             {default_generated}"
         );
 
         let override_input: syn::DeriveInput = syn::parse_quote! {
@@ -7701,7 +7694,8 @@ mod tests {
 
         assert!(
             !generated.contains("interface program_id does not match accounts_program_id"),
-            "executable programs share crate::ID by construction and should not emit the interface assertion: {generated}"
+            "executable programs share crate::ID by construction and should not emit the \
+             interface assertion: {generated}"
         );
     }
 
