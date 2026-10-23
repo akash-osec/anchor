@@ -215,7 +215,7 @@ fn remaining_accounts_walks_trailing_region() {
         MutMask::Static(EMPTY_MUT_MASK),
     );
 
-    let remaining = ctx.remaining_accounts().expect("walk");
+    let mut remaining = ctx.remaining_accounts().expect("walk");
     assert_eq!(remaining.len(), 3);
     assert_eq!(remaining[0].address().to_bytes(), unique_addr(2));
     assert_eq!(remaining[1].address().to_bytes(), unique_addr(3));
@@ -246,7 +246,7 @@ fn remaining_account_views_expose_compat_helpers() {
         MutMask::Static(EMPTY_MUT_MASK),
     );
 
-    let remaining = ctx.remaining_accounts().expect("walk");
+    let mut remaining = ctx.remaining_accounts().expect("walk");
     assert_eq!(remaining[0].key().to_bytes(), unique_addr(1));
     assert!(!remaining[0].data_is_empty());
     assert_eq!(remaining[0].try_data_len().unwrap(), 16);

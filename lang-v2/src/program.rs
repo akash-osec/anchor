@@ -1,8 +1,5 @@
-extern crate alloc;
-
 use {
     crate::{address_eq, require, Address, CpiHandle, CpiInstruction},
-    alloc::vec::Vec,
     core::{mem::MaybeUninit, slice::from_raw_parts},
     pinocchio::{
         cpi::{CpiAccount, Seed, Signer},
@@ -319,38 +316,26 @@ fn resolve_instruction_account_bindings<'a>(
             account,
             optional_sentinel_flags,
             instruction_index,
-        ) && (handle_index >= account_handles.len()
-            || instruction_accounts[instruction_index + 1..]
-                .iter()
-                .enumerate()
-                .any(|(offset, later)| {
-                    let later_index = instruction_index + 1 + offset;
-                    !is_skippable_optional_sentinel(
-                        program_id,
-                        later,
-                        optional_sentinel_flags,
-                        later_index,
-                    ) && instruction_account_matches_handle(later, &account_handles[handle_index])
-                }));
+        ) && can_match[(instruction_index + 1) * cols + handle_index];
         if can_skip {
             continue;
         }
 
-        let Some(handle) = account_handles.get(handle_index) else {
-            return Err(ProgramError::NotEnoughAccountKeys);
-        };
-        if !instruction_account_matches_handle(account, handle) {
-            return Err(ProgramError::InvalidArgument);
-        }
+        let handle = account_handles
+            .get(handle_index)
+            .ok_or(ProgramError::NotEnoughAccountKeys)?;
+        require!(
+            instruction_account_matches_handle(account, handle)
+                && can_match[(instruction_index + 1) * cols + handle_index + 1],
+            ProgramError::InvalidArgument
+        );
 
         on_match(account, handle)?;
         handle_index += 1;
         cpi_account_count += 1;
     }
 
-    if handle_index != account_handles.len() {
-        return Err(ProgramError::InvalidArgument);
-    }
+    require!(handle_index == handle_len, ProgramError::InvalidArgument);
 
 fn minimum_required_handle_count(
     instruction_accounts: &[InstructionAccount<'_>],
@@ -385,14 +370,6 @@ fn signers<'seeds>(signer_seeds: &'seeds [&'seeds [&'seeds [u8]]]) -> Vec<Signer
             Signer::from(cpi_seeds)
         })
         .collect()
-}
-
-#[inline(always)]
-fn signer_from_seeds<'seeds>(seeds: &'seeds [&'seeds [u8]]) -> Signer<'seeds, 'seeds> {
-    // SAFETY: `Seed` has the same in-memory representation as `&[u8]`.
-    let cpi_seeds: &[Seed] =
-        unsafe { from_raw_parts(seeds.as_ptr() as *const Seed, seeds.len()) };
-    Signer::from(cpi_seeds)
 }
 
 pub(crate) fn cpi_accounts<'a>(

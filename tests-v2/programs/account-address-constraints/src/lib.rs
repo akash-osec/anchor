@@ -1,6 +1,6 @@
 //! Examples for account-like field references in SPL constraints.
 //!
-//! These examples use regular and optional account wrappers as
+//! These examples use boxed and optional account wrappers as
 //! `mint::authority` / `token::authority` sibling fields, showing that SPL
 //! constraints can refer to any account wrapper with an account address.
 
@@ -93,7 +93,7 @@ pub mod account_address_constraints {
 pub struct InitMintWithBoxAuthority {
     #[account(mut)]
     pub payer: Signer,
-    pub authority: Account<AuthorityData>,
+    pub authority: Box<Account<AuthorityData>>,
     #[account(
         init,
         payer = payer,
@@ -110,7 +110,7 @@ pub struct InitTokenWithBoxAuthority {
     #[account(mut)]
     pub payer: Signer,
     pub mint: Account<Mint>,
-    pub authority: Account<AuthorityData>,
+    pub authority: Box<Account<AuthorityData>>,
     #[account(
         init,
         payer = payer,
@@ -124,14 +124,14 @@ pub struct InitTokenWithBoxAuthority {
 
 #[derive(Accounts)]
 pub struct CheckMintWithBoxAuthority {
-    pub authority: Account<AuthorityData>,
+    pub authority: Box<Account<AuthorityData>>,
     #[account(mut, mint::authority = authority)]
     pub mint: Account<Mint>,
 }
 
 #[derive(Accounts)]
 pub struct CheckTokenWithBoxAuthority {
-    pub authority: Account<AuthorityData>,
+    pub authority: Box<Account<AuthorityData>>,
     #[account(mut, token::authority = authority)]
     pub token_account: Account<TokenAccount>,
 }
@@ -154,9 +154,9 @@ pub struct CheckTokenWithOptionalAuthority {
 pub struct InitAtaWithBoxRefs {
     #[account(mut)]
     pub payer: Signer,
-    pub mint: Account<Mint>,
-    pub authority: Account<AuthorityData>,
-    pub token_program: Program<Token>,
+    pub mint: Box<Account<Mint>>,
+    pub authority: Box<Account<AuthorityData>>,
+    pub token_program: Box<Program<Token>>,
     #[account(
         init,
         payer = payer,
@@ -171,9 +171,9 @@ pub struct InitAtaWithBoxRefs {
 
 #[derive(Accounts)]
 pub struct CheckAtaWithBoxRefs {
-    pub mint: Account<Mint>,
-    pub authority: Account<AuthorityData>,
-    pub token_program: Program<Token>,
+    pub mint: Box<Account<Mint>>,
+    pub authority: Box<Account<AuthorityData>>,
+    pub token_program: Box<Program<Token>>,
     #[account(
         associated_token::mint = mint,
         associated_token::authority = authority,

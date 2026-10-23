@@ -106,7 +106,7 @@ impl<T, const N: usize> FixedVec<T, N> {
     }
 
     #[inline]
-    pub fn try_resize(&mut self, len: usize, value: T) -> Result<(), T>
+    pub(crate) fn try_resize(&mut self, len: usize, value: T) -> Result<(), T>
     where
         T: Clone,
     {
@@ -146,7 +146,7 @@ impl<T, const N: usize> FixedVec<T, N> {
         T: Copy,
     {
         assert!(
-            self.len + values.len() <= N,
+            values.len() <= N - self.len,
             "fixed vector capacity exceeded"
         );
         for value in values {
@@ -159,7 +159,7 @@ impl<T, const N: usize> FixedVec<T, N> {
     where
         T: Clone,
     {
-        if self.len + values.len() > N {
+        if values.len() > N - self.len {
             return Err(());
         }
         for value in values {
@@ -168,7 +168,6 @@ impl<T, const N: usize> FixedVec<T, N> {
         }
         Ok(())
     }
-}
 }
 
 impl<const N: usize> FixedVec<u8, N> {
@@ -307,7 +306,13 @@ where
         value
             .iter()
             .map(T::size_of)
-            .try_fold(length, |total, size| size.map(|size| total + size))
+            .try_fold(length, |total, size| {
+                size.and_then(|size| {
+                    total.checked_add(size).ok_or(wincode::WriteError::Custom(
+                        "fixed vector serialized size overflow",
+                    ))
+                })
+            })
     }
 
     fn write(mut writer: impl wincode::io::Writer, value: &Self::Src) -> wincode::WriteResult<()> {
@@ -372,5 +377,16 @@ mod tests {
             crate::BORSH_CONFIG,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn fallible_extend_rejects_overflow_without_mutating_the_buffer() {
+        let mut values = FixedVec::<u8, 4>::new();
+        values.extend([1, 2, 3]);
+
+        assert!(values.try_extend_from_slice(&[4, 5]).is_err());
+        assert_eq!(values.as_slice(), &[1, 2, 3]);
+        assert!(values.try_extend_from_slice(&[4]).is_ok());
+        assert_eq!(values.as_slice(), &[1, 2, 3, 4]);
     }
 }
