@@ -11,10 +11,9 @@
 //!   2. Duplicate handling: a dup-record (borrow_state ∈ 0..=254)
 //!      yields the earlier `AccountView` from the lookup array — not
 //!      an `AccountView` pointing at the dup slot.
-//!   3. `Context::remaining_accounts` walks the cursor lazily on first
-//!      call, caches the resulting `Vec<AccountView>`, and returns a
-//!      fresh clone on each subsequent call without advancing the
-//!      cursor or double-populating the cache.
+//!   3. `Context::remaining_accounts` walks the cursor once on first call,
+//!      then resolves entries lazily from the serialized input without
+//!      allocating or advancing the cursor again.
 //!
 //! Run: `cargo test -p anchor-lang --features testing --test cursor_and_remaining_accounts`
 
@@ -66,8 +65,8 @@ fn non_dup_with_data(i: u8, data_len: usize) -> AccountRecord {
     }
 }
 
-/// Allocate an uninitialised `[AccountView; 256]` on the heap as the
-/// backing store for `AccountCursor`'s lookup table. Callers derive
+/// Allocate an uninitialised `[AccountView; 256]` on the heap for the
+/// legacy lookup-backed `AccountCursor` path. Callers derive
 /// the `*mut AccountView` via `lookup.as_mut_ptr() as *mut _` and keep
 /// the `Vec` alive on the test's stack for the duration of the cursor
 /// — drop order (cursor before lookup) keeps the pointer valid
@@ -257,8 +256,8 @@ fn remaining_accounts_returns_empty_when_nothing_trails() {
 }
 
 #[test]
-fn remaining_accounts_caches_and_does_not_re_walk_cursor() {
-    // If the cache were bypassed, the second `remaining_accounts` call
+fn remaining_accounts_reuses_range_and_does_not_re_walk_cursor() {
+    // If the stored range were bypassed, the second `remaining_accounts` call
     // would re-enter the cursor past its current position and read
     // garbage (or undefined behaviour) past the input buffer tail.
     let mut sbf = SbfInputBuffer::build(&[non_dup(0), non_dup(1), non_dup(2)]);
@@ -280,15 +279,15 @@ fn remaining_accounts_caches_and_does_not_re_walk_cursor() {
     let first = ctx.remaining_accounts();
     let second = ctx.remaining_accounts();
 
-    // Structural equality via address, since AccountView is Copy and the
-    // cache returns a clone each call.
+    // Structural equality via address, since each lazy view resolves the
+    // same serialized account slot.
     assert_eq!(first.len(), 2);
     assert_eq!(second.len(), 2);
     for (a, b) in first.iter().zip(second.iter()) {
         assert_eq!(a.address().to_bytes(), b.address().to_bytes());
     }
     // Cursor must have advanced by exactly `remaining_num` (2), not
-    // twice that — verifies caching short-circuits the walk.
+    // twice that — verifies the stored range short-circuits the walk.
     //
     // NB: `consumed()` reads through the `&mut AccountCursor` stored
     // inside `ctx` so we can't call it on the outer `cursor` binding

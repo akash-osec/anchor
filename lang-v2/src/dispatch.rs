@@ -103,7 +103,7 @@ pub fn run_handler<'a, T: TryAccounts, R>(
         T::validate_accounts(program_id, views, ix_data)?
     };
     const _: () = assert!(pinocchio::MAX_TX_ACCOUNTS <= u8::MAX as usize);
-    let remaining_num = (num_accounts - T::HEADER_SIZE) as u8;
+    let remaining_num = num_accounts - T::HEADER_SIZE;
     let mut ctx = Context::new(program_id, ctx_accounts, bumps, cursor, remaining_num);
     let result = handler(&mut ctx, ix_args)?;
     ctx.accounts.exit_accounts(ix_data)?;

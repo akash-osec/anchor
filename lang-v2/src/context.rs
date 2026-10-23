@@ -22,8 +22,8 @@ pub struct Context<'a, T: Bumps> {
 
     /// Holds the cursor and the serialized range of trailing accounts after
     /// `try_accounts` has consumed the declared account header.
-    remaining_accounts: Option<(u8, u8)>,
-    remaining_num: u8,
+    remaining_accounts: Option<(usize, usize)>,
+    remaining_num: usize,
 
     cursor: &'a mut AccountCursor,
 }
@@ -32,15 +32,15 @@ pub struct Context<'a, T: Bumps> {
 #[derive(Clone, Copy)]
 pub struct RemainingAccounts<'a> {
     cursor: *const AccountCursor,
-    start: u8,
-    len: u8,
+    start: usize,
+    len: usize,
     marker: PhantomData<&'a AccountView>,
 }
 
 impl<'a> RemainingAccounts<'a> {
     #[inline]
     pub const fn len(self) -> usize {
-        self.len as usize
+        self.len
     }
 
     #[inline]
@@ -50,12 +50,15 @@ impl<'a> RemainingAccounts<'a> {
 
     #[inline]
     pub fn get(self, index: usize) -> Option<AccountView> {
-        let index = u8::try_from(index).ok()?;
         if index >= self.len {
             return None;
         }
+        let index = self
+            .start
+            .checked_add(index)
+            .and_then(|index| u8::try_from(index).ok())?;
         // SAFETY: the cursor remains valid for the view lifetime.
-        Some(unsafe { (*self.cursor).view_at(self.start + index) })
+        Some(unsafe { (*self.cursor).view_at(index) })
     }
 
     #[inline]
@@ -69,7 +72,7 @@ impl<'a> RemainingAccounts<'a> {
 
 pub struct RemainingAccountsIter<'a> {
     accounts: RemainingAccounts<'a>,
-    index: u8,
+    index: usize,
 }
 
 impl Iterator for RemainingAccountsIter<'_> {
@@ -77,9 +80,12 @@ impl Iterator for RemainingAccountsIter<'_> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        let account = self.accounts.get(self.index as usize);
-        self.index = self.index.saturating_add(1);
-        account
+        if self.index >= self.accounts.len {
+            return None;
+        }
+        let index = self.index;
+        self.index += 1;
+        self.accounts.get(index)
     }
 }
 
@@ -90,7 +96,7 @@ impl<'a, T: Bumps> Context<'a, T> {
         accounts: T,
         bumps: T::Bumps,
         cursor: &'a mut AccountCursor,
-        remaining_num: u8,
+        remaining_num: usize,
     ) -> Self {
         Self {
             program_id,
@@ -108,7 +114,7 @@ impl<'a, T: Bumps> Context<'a, T> {
         let (start, len) = match self.remaining_accounts {
             Some(range) => range,
             None => {
-                let start = self.cursor.consumed();
+                let start = self.cursor.consumed() as usize;
                 for _ in 0..self.remaining_num {
                     // SAFETY: cursor is positioned at the start of the remaining
                     // region and `remaining_num` is the exact number of accounts
