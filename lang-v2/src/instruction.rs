@@ -1,6 +1,9 @@
 //! Allocator-neutral instruction views used by the public CPI API.
 
-#[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
+#[cfg(any(
+    feature = "alloc",
+    not(any(target_os = "solana", target_arch = "bpf"))
+))]
 extern crate alloc;
 
 use {crate::Address, pinocchio::instruction::InstructionAccount};
@@ -59,7 +62,10 @@ where
     }
 }
 
-#[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
+#[cfg(any(
+    feature = "alloc",
+    not(any(target_os = "solana", target_arch = "bpf"))
+))]
 impl CpiInstruction for solana_instruction::Instruction {
     #[inline]
     fn program_id(&self) -> &Address {
