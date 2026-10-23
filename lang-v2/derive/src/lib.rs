@@ -5531,7 +5531,7 @@ fn process_handler(
             #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
             fn data(&self) -> anchor_lang::InstructionDataBuffer {
                 let mut data = anchor_lang::InstructionDataBuffer::new();
-                anchor_lang::try_extend_instruction_data(&mut data, Self::DISCRIMINATOR)
+                data.try_extend_from_slice(Self::DISCRIMINATOR)
                     .expect("host instruction discriminator serialization failed");
                 anchor_lang::wincode::config::serialize_into(
                     &mut data,
