@@ -83,11 +83,10 @@ type such as `PodVec<T, MAX>` or provide its own allocator-backed wrapper. IDL
 emission and generated client JSON remain host-only and may use `std`; they are
 kept separate from the deployed runtime.
 
-`Context::remaining_accounts()` also returns a borrowed mutable slice on SBF.
-The slice should be scoped before using the context again; callers that need
-an owned host value can copy it explicitly. If the remaining-account region
-exceeds `MAX_ACCOUNT_METAS` on SBF, the walk returns `InvalidArgument` instead
-of panicking or allocating.
+`Context::remaining_accounts()` returns a lazy `RemainingAccounts` view on SBF.
+Use `.get(index)` or `.iter()` to resolve entries on demand; no fixed-capacity
+account cache is materialized. The view is scoped to the instruction and does
+not allocate. Callers that need an owned host value can copy it explicitly.
 
 The boundary is split deliberately:
 
