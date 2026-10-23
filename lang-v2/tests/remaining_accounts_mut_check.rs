@@ -105,7 +105,13 @@ fn run_with(
         remaining_num,
         MutMask::Static(mut_mask),
     );
-    ctx.remaining_accounts().map(|views| views.to_vec())
+    ctx.remaining_accounts().map(|views| {
+        let mut out = AccountViewBuffer::new();
+        for view in &views {
+            out.try_push(*view).expect("remaining-account capacity");
+        }
+        out
+    })
 }
 
 // ---------------------------------------------------------------------------

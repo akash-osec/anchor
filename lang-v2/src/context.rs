@@ -91,9 +91,10 @@ impl<'a, T: Bumps> Context<'a, T> {
         }
     }
 
-    /// Returns trailing accounts beyond the declared `T` fields as a borrowed
-    /// slice. First call walks the cursor and caches the resulting `Result`;
-    /// subsequent calls replay the cache without copying the account views.
+    /// Returns trailing accounts beyond the declared `T` fields in a bounded
+    /// fixed-capacity buffer. The first call walks the cursor and caches the
+    /// resulting `Result`; subsequent calls replay the cache by copying the
+    /// small account-view values without allocating.
     /// Caching the error is important: the walk advances an unsafe cursor, and
     /// a handler that calls this again after an error must not trigger another
     /// `cursor.next()` loop.
@@ -110,15 +111,14 @@ impl<'a, T: Bumps> Context<'a, T> {
     /// a trailing slot's bit overlaps with an active declared mut slot's bit,
     /// which by construction means the runtime resolved the trailing slot as a
     /// dup of that declared mut account.
-    pub fn remaining_accounts(
-        &mut self,
-    ) -> Result<&mut [pinocchio::account::AccountView], ProgramError> {
+    pub fn remaining_accounts(&mut self) -> Result<crate::AccountViewBuffer, ProgramError> {
         if self.remaining_accounts.is_unparsed() {
-            self.remaining_accounts = RemainingAccounts::Cached(self.walk_remaining());
+            let result = self.walk_remaining();
+            self.remaining_accounts = RemainingAccounts::Cached(result);
         }
 
-        match &mut self.remaining_accounts {
-            RemainingAccounts::Cached(Ok(accs)) => Ok(accs.as_mut()),
+        match &self.remaining_accounts {
+            RemainingAccounts::Cached(Ok(accs)) => Ok(accs.clone()),
             RemainingAccounts::Cached(Err(err)) => Err(err.clone()),
             RemainingAccounts::Unparsed { .. } => unreachable!(),
         }

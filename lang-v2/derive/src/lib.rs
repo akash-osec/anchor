@@ -5298,12 +5298,15 @@ fn process_handler(
     let set_return_data = returns_value.then(|| {
         quote! {
             let mut __return_data = anchor_lang::InstructionDataBuffer::new();
-            anchor_lang::wincode::config::serialize_into(
+            if anchor_lang::wincode::config::serialize_into(
                 &mut __return_data,
                 &__result,
                 anchor_lang::BORSH_CONFIG,
             )
-                .expect("return data serialization failed");
+            .is_err()
+            {
+                return anchor_lang::Error::InvalidInstructionData.into();
+            }
             anchor_lang::pinocchio::cpi::set_return_data(&__return_data);
         }
     });
@@ -6171,7 +6174,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
                 // View wrappers (Signer, Program<T>, Sysvar<T>, …) use
                 // the trait's default no-op `__register_idl_deps`, so they
                 // contribute nothing. Primitive / collection / `&T`
-                // blanket impls are no-op forwarders,
+                // blanket impls are no-op forwarders (`idl_build.rs`),
                 // so only user-derived `#[account]` / `#[event]` /
                 // `IdlType` structs contribute.
                 //
