@@ -4090,15 +4090,22 @@ fn gen_declare_program_events(idl: &serde_json::Value) -> syn::Result<TokenStrea
             quote! {
                 impl anchor_lang::Event for #ident {
                     fn try_data(&self) -> anchor_lang::Result<anchor_lang::InstructionDataBuffer> {
-                        let disc = <Self as anchor_lang::Discriminator>::DISCRIMINATOR;
-                        let payload = anchor_lang::bytemuck::bytes_of(self);
                         let mut data =
                             anchor_lang::InstructionDataBuffer::new();
+                        self.try_data_into(&mut data)?;
+                        Ok(data)
+                    }
+
+                    fn try_data_into<const N: usize>(
+                        &self,
+                        data: &mut anchor_lang::FixedVec<u8, N>,
+                    ) -> anchor_lang::Result<()> {
+                        let disc = <Self as anchor_lang::Discriminator>::DISCRIMINATOR;
+                        let payload = anchor_lang::bytemuck::bytes_of(self);
                         data.try_extend_from_slice(disc)
                             .map_err(|_| anchor_lang::Error::InvalidInstructionData)?;
                         data.try_extend_from_slice(payload)
-                            .map_err(|_| anchor_lang::Error::InvalidInstructionData)?;
-                        Ok(data)
+                            .map_err(|_| anchor_lang::Error::InvalidInstructionData)
                     }
 
                     #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
@@ -4111,18 +4118,25 @@ fn gen_declare_program_events(idl: &serde_json::Value) -> syn::Result<TokenStrea
             quote! {
                 impl anchor_lang::Event for #ident {
                     fn try_data(&self) -> anchor_lang::Result<anchor_lang::InstructionDataBuffer> {
-                        let disc = <Self as anchor_lang::Discriminator>::DISCRIMINATOR;
                         let mut data =
                             anchor_lang::InstructionDataBuffer::new();
+                        self.try_data_into(&mut data)?;
+                        Ok(data)
+                    }
+
+                    fn try_data_into<const N: usize>(
+                        &self,
+                        data: &mut anchor_lang::FixedVec<u8, N>,
+                    ) -> anchor_lang::Result<()> {
+                        let disc = <Self as anchor_lang::Discriminator>::DISCRIMINATOR;
                         data.try_extend_from_slice(disc)
                             .map_err(|_| anchor_lang::Error::InvalidInstructionData)?;
                         anchor_lang::wincode::config::serialize_into(
-                            &mut data,
+                            data,
                             self,
                             anchor_lang::BORSH_CONFIG,
                         )
-                        .map_err(|_| anchor_lang::Error::InvalidInstructionData)?;
-                        Ok(data)
+                        .map_err(|_| anchor_lang::Error::InvalidInstructionData)
                     }
 
                     #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
