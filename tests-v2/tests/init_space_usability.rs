@@ -59,7 +59,7 @@ fn init_space_constants_accept_aliases_and_module_max_len() {
         &payer,
         &[],
     )
-        .expect("compile-time InitSpace constants should match expected sizes");
+    .expect("compile-time InitSpace constants should match expected sizes");
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn profile_space_allocates_address_alias_and_module_string_bound() {
 }
 
 #[test]
-fn nested_vec_string_space_uses_both_module_constants() {
+fn nested_bounded_string_space_uses_both_module_constants() {
     let (mut svm, payer) = setup();
     let nested = nested_pda();
     let metas = vec![
@@ -97,7 +97,7 @@ fn nested_vec_string_space_uses_both_module_constants() {
         .expect("init_nested should allocate using Nested::INIT_SPACE");
 
     let account = svm.get_account(&nested).expect("nested exists");
-    // Nested: Vec<String> max_len(limits::ITEMS=4, limits::NAME=16)
+    // Nested: FixedVec<FixedVec<u8, 16>, 4>
     // = 4 + (4 + 16) * 4 = 84, plus 8-byte discriminator.
     assert_eq!(account.data.len(), 8 + 84);
     let tags_len = u32::from_le_bytes(account.data[8..12].try_into().unwrap());

@@ -1,17 +1,13 @@
-extern crate alloc;
-
+pub use pinocchio::cpi::{set_return_data, MAX_RETURN_DATA};
 use {
     crate::{address_eq, require, Address, CpiHandle, CpiInstruction},
-    alloc::vec::Vec,
     core::{mem::MaybeUninit, slice::from_raw_parts},
     pinocchio::{
-        cpi::{CpiAccount, Seed, Signer},
+        cpi::CpiAccount,
         instruction::{InstructionAccount, InstructionView},
     },
     solana_program_error::{ProgramError, ProgramResult},
 };
-
-pub use pinocchio::cpi::{set_return_data, MAX_RETURN_DATA};
 
 /// Borrowed fixed-capacity storage accepted by the public CPI helpers.
 ///
@@ -56,10 +52,7 @@ pub fn get_return_data() -> Option<(crate::Address, pinocchio::cpi::ReturnData)>
 /// [`invoke_with_optional_sentinels`] / [`invoke_signed_with_optional_sentinels`]
 /// (or [`crate::CpiContext`]) so required readonly program-id accounts still
 /// require matching handles.
-pub fn invoke<'a, H, I, const N: usize>(
-    instruction: &I,
-    account_handles: &H,
-) -> ProgramResult
+pub fn invoke<'a, H, I, const N: usize>(instruction: &I, account_handles: &H) -> ProgramResult
 where
     H: CpiHandleSource<'a, N>,
     I: CpiInstruction + ?Sized,
@@ -119,12 +112,31 @@ where
     I: CpiInstruction + ?Sized,
     F: crate::OptionalSentinelFlags + ?Sized,
 {
-    let account_handles_slice = account_handles.as_slice();
+    invoke_signed_with_capacity::<N, I, F>(
+        instruction,
+        account_handles.as_slice(),
+        signer_seeds,
+        optional_sentinel_flags,
+    )
+}
+
+pub(crate) fn invoke_signed_with_capacity<
+    'a,
+    'seeds,
+    const N: usize,
+    I: CpiInstruction + ?Sized,
+    F: crate::OptionalSentinelFlags + ?Sized,
+>(
+    instruction: &I,
+    account_handles: &[CpiHandle<'a>],
+    signer_seeds: &'seeds [&'seeds [&'seeds [u8]]],
+    optional_sentinel_flags: &F,
+) -> ProgramResult {
     instruction.with_instruction_accounts(|instruction_accounts| {
-        validate_instruction_accounts::<F>(
+        validate_instruction_accounts::<N, F>(
             instruction_accounts,
             instruction.program_id(),
-            account_handles_slice,
+            account_handles,
             optional_sentinel_flags,
             signer_seeds.is_empty(),
         )
@@ -134,7 +146,7 @@ where
     // has a matching handle, writable metas use writable handles, and
     // AccountView borrow state permits the CPI.
     unsafe {
-        invoke_signed_unchecked_with_optional_sentinels(
+        invoke_signed_unchecked_with_capacity::<N, I, F>(
             instruction,
             account_handles,
             signer_seeds,
@@ -198,7 +210,7 @@ pub unsafe fn invoke_signed_unchecked_with_optional_sentinels<
     'a,
     'seeds,
     H,
-    I,
+    I: CpiInstruction + ?Sized,
     F,
     const N: usize,
 >(
@@ -209,15 +221,35 @@ pub unsafe fn invoke_signed_unchecked_with_optional_sentinels<
 ) -> ProgramResult
 where
     H: CpiHandleSource<'a, N>,
-    I: CpiInstruction + ?Sized,
     F: crate::OptionalSentinelFlags + ?Sized,
 {
-    let account_handles_slice = account_handles.as_slice();
+    unsafe {
+        invoke_signed_unchecked_with_capacity::<N, I, F>(
+            instruction,
+            account_handles.as_slice(),
+            signer_seeds,
+            optional_sentinel_flags,
+        )
+    }
+}
+
+unsafe fn invoke_signed_unchecked_with_capacity<
+    'a,
+    'seeds,
+    const N: usize,
+    I: CpiInstruction + ?Sized,
+    F: crate::OptionalSentinelFlags + ?Sized,
+>(
+    instruction: &I,
+    account_handles: &[CpiHandle<'a>],
+    signer_seeds: &'seeds [&'seeds [&'seeds [u8]]],
+    optional_sentinel_flags: &F,
+) -> ProgramResult {
     instruction.with_instruction_accounts(|instruction_accounts| {
-        let cpi_account_count = required_cpi_account_count::<F>(
+        let cpi_account_count = required_cpi_account_count::<N, F>(
             instruction_accounts,
             instruction.program_id(),
-            account_handles_slice,
+            account_handles,
             optional_sentinel_flags,
         )?;
         let instruction_view = InstructionView {
@@ -225,9 +257,9 @@ where
             accounts: instruction_accounts,
             data: instruction.data(),
         };
-        let signers = signers(signer_seeds);
-        let _borrow_guards = crate::enter_cpi(account_handles_slice);
-        let cpi_accounts = cpi_accounts(account_handles_slice);
+        let signers = signers::<N>(signer_seeds)?;
+        let _borrow_guards = crate::enter_cpi::<N>(account_handles)?;
+        let cpi_accounts = cpi_accounts::<N>(account_handles)?;
 
         // SAFETY:
         // - `cpi_accounts` was fully initialized from the provided handles.
@@ -278,46 +310,41 @@ pub(crate) fn validate_fixed_instruction_accounts<'a, const N: usize>(
     Ok(())
 }
 
-pub(crate) fn validate_instruction_accounts<'a, F>(
+pub(crate) fn validate_instruction_accounts<
+    'a,
+    const N: usize,
+    F: crate::OptionalSentinelFlags + ?Sized,
+>(
     instruction_accounts: &[InstructionAccount<'a>],
     program_id: &Address,
     account_handles: &[CpiHandle<'a>],
     optional_sentinel_flags: &F,
     enforce_signers: bool,
-) -> ProgramResult
-where
-    F: crate::OptionalSentinelFlags + ?Sized,
-{
-    let bindings = resolve_instruction_account_bindings::<F>(
+) -> ProgramResult {
+    walk_instruction_account_bindings::<N, F, _>(
         instruction_accounts,
         program_id,
         account_handles,
         optional_sentinel_flags,
-    )?;
-
-    for (account, binding) in instruction_accounts.iter().zip(bindings) {
-        let Some(handle_index) = binding else {
-            continue;
-        };
-        let handle = &account_handles[handle_index];
-
-        if account.is_writable {
-            if handle.requires_borrow_check() {
-                handle.account_view().check_borrow_mut()?;
+        |account, handle| {
+            if account.is_writable {
+                if handle.requires_borrow_check() {
+                    handle.account_view().check_borrow_mut()?;
+                }
+            } else if handle.requires_borrow_check() {
+                handle.account_view().check_borrow()?;
             }
-        } else if handle.requires_borrow_check() {
-            handle.account_view().check_borrow()?;
-        }
 
-        if enforce_signers && account.is_signer {
-            require!(
-                handle.account_view().is_signer(),
-                ProgramError::MissingRequiredSignature
-            );
-        }
-    }
-
-    Ok(())
+            if enforce_signers && account.is_signer {
+                require!(
+                    handle.account_view().is_signer(),
+                    ProgramError::MissingRequiredSignature
+                );
+            }
+            Ok(())
+        },
+    )
+    .map(|_| ())
 }
 
 fn is_optional_instruction_account_sentinel_candidate(
@@ -337,102 +364,140 @@ fn is_skippable_optional_sentinel<F: crate::OptionalSentinelFlags + ?Sized>(
         && is_optional_instruction_account_sentinel_candidate(program_id, account)
 }
 
-fn required_cpi_account_count<'a, F: crate::OptionalSentinelFlags + ?Sized>(
+fn required_cpi_account_count<'a, const N: usize, F: crate::OptionalSentinelFlags + ?Sized>(
     instruction_accounts: &[InstructionAccount<'a>],
     program_id: &Address,
     account_handles: &[CpiHandle<'a>],
     optional_sentinel_flags: &F,
 ) -> Result<usize, ProgramError> {
-    Ok(resolve_instruction_account_bindings::<F>(
+    walk_instruction_account_bindings::<N, F, _>(
         instruction_accounts,
         program_id,
         account_handles,
         optional_sentinel_flags,
-    )?
-    .into_iter()
-    .flatten()
-    .count())
+        |_, _| Ok(()),
+    )
 }
 
-fn resolve_instruction_account_bindings<'a, F: crate::OptionalSentinelFlags + ?Sized>(
+fn walk_instruction_account_bindings<
+    'a,
+    const N: usize,
+    F: crate::OptionalSentinelFlags + ?Sized,
+    V,
+>(
     instruction_accounts: &[InstructionAccount<'a>],
     program_id: &Address,
     account_handles: &[CpiHandle<'a>],
     optional_sentinel_flags: &F,
-) -> Result<Vec<Option<usize>>, ProgramError> {
-    let cols = account_handles.len() + 1;
-    let rows = instruction_accounts.len() + 1;
-    let mut can_match = alloc::vec![false; rows * cols];
-
-    for handle_index in 0..=account_handles.len() {
-        can_match[(rows - 1) * cols + handle_index] = true;
-    }
-
-    for instruction_index in (0..instruction_accounts.len()).rev() {
-        let account = &instruction_accounts[instruction_index];
-        for handle_index in (0..=account_handles.len()).rev() {
-            let can_consume = handle_index < account_handles.len()
-                && instruction_account_matches_handle(account, &account_handles[handle_index])
-                && can_match[(instruction_index + 1) * cols + (handle_index + 1)];
-            let can_skip = is_skippable_optional_sentinel(
-                program_id,
-                account,
-                optional_sentinel_flags,
-                instruction_index,
-            ) && can_match[(instruction_index + 1) * cols + handle_index];
-            can_match[instruction_index * cols + handle_index] = can_consume || can_skip;
-        }
-    }
-
+    mut on_match: V,
+) -> Result<usize, ProgramError>
+where
+    V: FnMut(&InstructionAccount<'a>, &CpiHandle<'a>) -> ProgramResult,
+{
+    let required_account_count =
+        minimum_required_handle_count(instruction_accounts, program_id, optional_sentinel_flags);
     require!(
-        can_match[0],
-        if account_handles.len()
-            < minimum_required_handle_count::<F>(
-                instruction_accounts,
-                program_id,
-                optional_sentinel_flags
-            )
-        {
-            ProgramError::NotEnoughAccountKeys
-        } else {
-            ProgramError::InvalidArgument
-        }
+        account_handles.len() >= required_account_count,
+        ProgramError::NotEnoughAccountKeys
     );
 
-    let mut bindings = Vec::with_capacity(instruction_accounts.len());
-    let mut handle_index = 0;
+    // One reachability bit per handle replaces the heap-backed matrix. Storage
+    // follows the caller's capacity, independently of the number of optional
+    // instruction slots. Checking suffixes avoids exponential backtracking
+    // when many sentinels match the same program account.
+    let mut reachable = crate::FixedVec::<bool, N>::new();
+    reachable
+        .try_resize(account_handles.len(), false)
+        .map_err(|_| ProgramError::InvalidArgument)?;
+    require!(
+        account_bindings_possible(
+            instruction_accounts,
+            program_id,
+            account_handles,
+            optional_sentinel_flags,
+            0,
+            &mut reachable,
+        ),
+        ProgramError::InvalidArgument
+    );
 
+    let mut handle_index = 0;
     for (instruction_index, account) in instruction_accounts.iter().enumerate() {
-        // Prefer skipping intentional Option::None sentinels so a later
-        // required program-id account can still consume a matching handle.
-        let can_skip = is_skippable_optional_sentinel(
+        let optional = is_skippable_optional_sentinel(
             program_id,
             account,
             optional_sentinel_flags,
             instruction_index,
-        ) && can_match[(instruction_index + 1) * cols + handle_index];
-        if can_skip {
-            bindings.push(None);
-            continue;
-        }
-
-        let can_consume = handle_index < account_handles.len()
-            && instruction_account_matches_handle(account, &account_handles[handle_index])
-            && can_match[(instruction_index + 1) * cols + (handle_index + 1)];
-        if can_consume {
-            bindings.push(Some(handle_index));
-            handle_index += 1;
-            continue;
-        }
-
-        debug_assert!(
-            false,
-            "validated instruction-account matching must reconstruct"
         );
-        bindings.push(None);
+        if optional {
+            let matches = account_handles
+                .get(handle_index)
+                .is_some_and(|handle| instruction_account_matches_handle(account, handle));
+            if !matches
+                || !account_bindings_possible(
+                    &instruction_accounts[instruction_index + 1..],
+                    program_id,
+                    &account_handles[handle_index + 1..],
+                    optional_sentinel_flags,
+                    instruction_index + 1,
+                    &mut reachable,
+                )
+            {
+                continue;
+            }
+        }
+
+        let handle = account_handles
+            .get(handle_index)
+            .ok_or(ProgramError::NotEnoughAccountKeys)?;
+        require!(
+            instruction_account_matches_handle(account, handle),
+            ProgramError::InvalidArgument
+        );
+        on_match(account, handle)?;
+        handle_index += 1;
     }
 
-    Ok(bindings)
+    require!(
+        handle_index == account_handles.len(),
+        ProgramError::InvalidArgument
+    );
+    Ok(handle_index)
+}
+
+/// Whether the entire handle suffix can bind to the instruction suffix.
+/// Updating in reverse keeps the previous row in the same caller-sized slice.
+fn account_bindings_possible(
+    instruction_accounts: &[InstructionAccount<'_>],
+    program_id: &Address,
+    handles: &[CpiHandle<'_>],
+    optional_sentinel_flags: &(impl crate::OptionalSentinelFlags + ?Sized),
+    instruction_offset: usize,
+    reachable: &mut [bool],
+) -> bool {
+    let reachable = &mut reachable[..handles.len()];
+    reachable.fill(false);
+    let mut empty_prefix = true;
+    for (index, account) in instruction_accounts.iter().enumerate() {
+        let optional = is_skippable_optional_sentinel(
+            program_id,
+            account,
+            optional_sentinel_flags,
+            instruction_offset + index,
+        );
+        for handle_index in (0..handles.len()).rev() {
+            let previous = if handle_index == 0 {
+                empty_prefix
+            } else {
+                reachable[handle_index - 1]
+            };
+            reachable[handle_index] = (optional && reachable[handle_index])
+                || (previous
+                    && instruction_account_matches_handle(account, &handles[handle_index]));
+        }
+        empty_prefix &= optional;
+    }
+    reachable.last().copied().unwrap_or(empty_prefix)
 }
 
 fn minimum_required_handle_count<F: crate::OptionalSentinelFlags + ?Sized>(
@@ -453,31 +518,32 @@ fn instruction_account_matches_handle(
     account: &InstructionAccount<'_>,
     handle: &CpiHandle<'_>,
 ) -> bool {
-    address_eq(account.address, handle.address())
-        && (!account.is_writable || handle.is_writable())
+    address_eq(account.address, handle.address()) && (!account.is_writable || handle.is_writable())
 }
 
-fn signers<'seeds>(signer_seeds: &'seeds [&'seeds [&'seeds [u8]]]) -> Vec<Signer<'seeds, 'seeds>> {
-    signer_seeds
-        .iter()
-        .map(|seeds| {
-            // SAFETY: `Seed` has the same in-memory representation as `&[u8]`;
-            // this is the conversion used by `CpiContext::invoke` as well.
-            let cpi_seeds: &[Seed] =
-                unsafe { from_raw_parts(seeds.as_ptr() as *const Seed, seeds.len()) };
-            Signer::from(cpi_seeds)
-        })
-        .collect()
+fn signers<'seeds, const N: usize>(
+    signer_seeds: &'seeds [&'seeds [&'seeds [u8]]],
+) -> Result<crate::SignerBuffer<'seeds, N>, ProgramError> {
+    let mut signers = crate::SignerBuffer::new();
+    for seeds in signer_seeds {
+        signers
+            .try_push(crate::cpi::signer_from_seeds(seeds))
+            .map_err(|_| ProgramError::InvalidArgument)?;
+    }
+    Ok(signers)
 }
 
-fn cpi_accounts<'a>(account_handles: &[CpiHandle<'a>]) -> Vec<MaybeUninit<CpiAccount<'a>>> {
-    let mut accounts = Vec::with_capacity(account_handles.len());
-    // SAFETY: `MaybeUninit<CpiAccount>` does not require initialization.
-    unsafe { accounts.set_len(account_handles.len()) };
-
-    for (handle, slot) in account_handles.iter().zip(accounts.iter_mut()) {
-        CpiAccount::init_from_account_view(handle.account_view(), slot);
+pub(crate) fn cpi_accounts<'a, const N: usize>(
+    account_handles: &[CpiHandle<'a>],
+) -> Result<crate::CpiAccountBuffer<'a, N>, ProgramError> {
+    let mut accounts = crate::CpiAccountBuffer::new();
+    for handle in account_handles {
+        let mut slot = MaybeUninit::uninit();
+        CpiAccount::init_from_account_view(handle.account_view(), &mut slot);
+        accounts
+            .try_push(slot)
+            .map_err(|_| ProgramError::InvalidArgument)?;
     }
 
-    accounts
+    Ok(accounts)
 }

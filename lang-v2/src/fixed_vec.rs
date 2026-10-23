@@ -1,8 +1,8 @@
 //! Small, fixed-capacity vectors for transient on-chain data.
 //!
-//! These buffers keep transient storage inline and bounded. Callers that need
-//! normal error handling should use the `try_*` methods rather than the
-//! panic-on-overflow convenience methods.
+//! These buffers keep transient storage inline and bounded. Compatibility
+//! methods retain panic-on-overflow behavior, while runtime paths should use
+//! the fallible `try_*` methods so capacity exhaustion becomes a normal error.
 
 use core::{
     fmt,
@@ -13,6 +13,7 @@ use core::{
     },
     slice,
 };
+use wincode::len::SeqLen;
 
 pub struct FixedVec<T, const N: usize> {
     data: [MaybeUninit<T>; N],
@@ -105,6 +106,21 @@ impl<T, const N: usize> FixedVec<T, N> {
     }
 
     #[inline]
+    pub(crate) fn try_resize(&mut self, len: usize, value: T) -> Result<(), T>
+    where
+        T: Clone,
+    {
+        if len > N {
+            return Err(value);
+        }
+        while self.len < len {
+            self.push(value.clone());
+        }
+        self.truncate(len);
+        Ok(())
+    }
+
+    #[inline]
     pub fn as_slice(&self) -> &[T] {
         unsafe { slice::from_raw_parts(self.data.as_ptr().cast(), self.len) }
     }
@@ -129,7 +145,10 @@ impl<T, const N: usize> FixedVec<T, N> {
     where
         T: Copy,
     {
-        assert!(self.len + values.len() <= N, "fixed vector capacity exceeded");
+        assert!(
+            values.len() <= N - self.len,
+            "fixed vector capacity exceeded"
+        );
         for value in values {
             self.push(*value);
         }
@@ -140,7 +159,7 @@ impl<T, const N: usize> FixedVec<T, N> {
     where
         T: Clone,
     {
-        if self.len + values.len() > N {
+        if values.len() > N - self.len {
             return Err(());
         }
         for value in values {
@@ -227,7 +246,14 @@ macro_rules! impl_slice_index {
     };
 }
 
-impl_slice_index!(Range<usize>, RangeFrom<usize>, RangeFull, RangeInclusive<usize>, RangeTo<usize>, RangeToInclusive<usize>);
+impl_slice_index!(
+    Range<usize>,
+    RangeFrom<usize>,
+    RangeFull,
+    RangeInclusive<usize>,
+    RangeTo<usize>,
+    RangeToInclusive<usize>
+);
 
 impl<'a, T, const N: usize> IntoIterator for &'a FixedVec<T, N> {
     type Item = &'a T;
@@ -259,5 +285,108 @@ impl<const N: usize> wincode::io::Writer for FixedVec<u8, N> {
     fn write(&mut self, src: &[u8]) -> wincode::io::WriteResult<()> {
         self.try_extend_from_slice(src)
             .map_err(|_| wincode::io::WriteError::WriteSizeLimit(src.len()))
+    }
+}
+
+// Wincode's built-in variable-length sequence implementations are backed by
+// `alloc::vec::Vec`. Keep the same borsh-compatible u32 length prefix for
+// generated on-chain bindings, but store decoded elements in this bounded
+// buffer instead. This is intentionally a separate implementation from the
+// account-oriented `PodVec`: `FixedVec` is transient and may contain types
+// that are not `Pod`.
+unsafe impl<T, const N: usize, C> wincode::SchemaWrite<C> for FixedVec<T, N>
+where
+    C: wincode::config::Config,
+    T: wincode::SchemaWrite<C, Src = T>,
+{
+    type Src = Self;
+
+    fn size_of(value: &Self::Src) -> wincode::WriteResult<usize> {
+        let length = C::LengthEncoding::write_bytes_needed(value.len())?;
+        value
+            .iter()
+            .map(T::size_of)
+            .try_fold(length, |total, size| {
+                size.and_then(|size| {
+                    total.checked_add(size).ok_or(wincode::WriteError::Custom(
+                        "fixed vector serialized size overflow",
+                    ))
+                })
+            })
+    }
+
+    fn write(mut writer: impl wincode::io::Writer, value: &Self::Src) -> wincode::WriteResult<()> {
+        if value.len() > N {
+            return Err(wincode::WriteError::Custom(
+                "fixed vector capacity exceeded",
+            ));
+        }
+        C::LengthEncoding::write(writer.by_ref(), value.len())?;
+        for item in value {
+            T::write(writer.by_ref(), item)?;
+        }
+        Ok(())
+    }
+}
+
+unsafe impl<'de, T, const N: usize, C> wincode::SchemaRead<'de, C> for FixedVec<T, N>
+where
+    C: wincode::config::Config,
+    T: wincode::SchemaRead<'de, C, Dst = T>,
+{
+    type Dst = Self;
+
+    fn read(
+        mut reader: impl wincode::io::Reader<'de>,
+        dst: &mut MaybeUninit<Self::Dst>,
+    ) -> wincode::ReadResult<()> {
+        let length = C::LengthEncoding::read(reader.by_ref())?;
+        if length > N {
+            return Err(wincode::ReadError::Custom("fixed vector capacity exceeded"));
+        }
+        let mut value = Self::new();
+        for _ in 0..length {
+            value.push(T::get(reader.by_ref())?);
+        }
+        dst.write(value);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FixedVec;
+
+    #[test]
+    fn borsh_sequence_round_trips_without_heap_storage() {
+        let mut values = FixedVec::<u16, 4>::new();
+        values.extend([10, 20, 30]);
+        let encoded = wincode::config::serialize(&values, crate::BORSH_CONFIG).unwrap();
+        assert_eq!(encoded, [3, 0, 0, 0, 10, 0, 20, 0, 30, 0]);
+
+        let decoded: FixedVec<u16, 4> =
+            wincode::config::deserialize(&encoded, crate::BORSH_CONFIG).unwrap();
+        assert_eq!(decoded.as_slice(), &[10, 20, 30]);
+    }
+
+    #[test]
+    fn borsh_sequence_rejects_capacity_overflow() {
+        let encoded = [5, 0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0];
+        let result = wincode::config::deserialize::<FixedVec<u16, 4>, _>(
+            &encoded,
+            crate::BORSH_CONFIG,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fallible_extend_rejects_overflow_without_mutating_the_buffer() {
+        let mut values = FixedVec::<u8, 4>::new();
+        values.extend([1, 2, 3]);
+
+        assert!(values.try_extend_from_slice(&[4, 5]).is_err());
+        assert_eq!(values.as_slice(), &[1, 2, 3]);
+        assert!(values.try_extend_from_slice(&[4]).is_ok());
+        assert_eq!(values.as_slice(), &[1, 2, 3, 4]);
     }
 }

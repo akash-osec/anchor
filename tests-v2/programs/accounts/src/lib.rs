@@ -2,8 +2,6 @@
 //! seeds, and CPI suites: Sysvar, SystemAccount, and bare
 //! UncheckedAccount values.
 
-extern crate alloc;
-
 use {
     anchor_lang::{
         accounts::Slab,
@@ -17,8 +15,7 @@ use {
 
 declare_id!("Acc1111111111111111111111111111111111111111");
 
-const PROGRAM_OWNER: Address =
-    anchor_lang::address!("Acc1111111111111111111111111111111111111111");
+const PROGRAM_OWNER: Address = anchor_lang::address!("Acc1111111111111111111111111111111111111111");
 const SYSTEM_SEED: &str = "anchor-v2-seed";
 const SYSTEM_TRANSFER_SEED: &str = "anchor-v2-transfer";
 
@@ -237,7 +234,10 @@ pub mod accounts_test {
             from: ctx.accounts.from.cpi_handle_mut(),
             to: ctx.accounts.to.cpi_handle_mut(),
         };
-        let cpi_ctx = CpiContext::<_, 2>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 2>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::transfer(cpi_ctx, amount)?;
         Ok(())
     }
@@ -252,7 +252,10 @@ pub mod accounts_test {
             from: ctx.accounts.from.cpi_handle_mut(),
             to: ctx.accounts.to.cpi_handle_mut(),
         };
-        let cpi_ctx = CpiContext::<_, 2>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 2>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::create_account(cpi_ctx, lamports, space, &PROGRAM_OWNER)?;
         Ok(())
     }
@@ -268,7 +271,10 @@ pub mod accounts_test {
             to: ctx.accounts.to.cpi_handle_mut(),
             base: ctx.accounts.base.cpi_handle(),
         };
-        let cpi_ctx = CpiContext::<_, 3>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 3>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::create_account_with_seed(
             cpi_ctx,
             SYSTEM_SEED,
@@ -287,7 +293,10 @@ pub mod accounts_test {
         let cpi_accounts = system_program::Allocate {
             account_to_allocate: ctx.accounts.account_to_allocate.cpi_handle_mut(),
         };
-        let cpi_ctx = CpiContext::<_, 1>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 1>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::allocate(cpi_ctx, space)?;
         Ok(())
     }
@@ -301,7 +310,10 @@ pub mod accounts_test {
             account_to_allocate: ctx.accounts.account_to_allocate.cpi_handle_mut(),
             base: ctx.accounts.base.cpi_handle(),
         };
-        let cpi_ctx = CpiContext::<_, 2>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 2>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::allocate_with_seed(cpi_ctx, SYSTEM_SEED, space, &PROGRAM_OWNER)?;
         Ok(())
     }
@@ -311,7 +323,10 @@ pub mod accounts_test {
         let cpi_accounts = system_program::Assign {
             account_to_assign: ctx.accounts.account_to_assign.cpi_handle_mut(),
         };
-        let cpi_ctx = CpiContext::<_, 1>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 1>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::assign(cpi_ctx, &PROGRAM_OWNER)?;
         Ok(())
     }
@@ -324,7 +339,10 @@ pub mod accounts_test {
             account_to_assign: ctx.accounts.account_to_assign.cpi_handle_mut(),
             base: ctx.accounts.base.cpi_handle(),
         };
-        let cpi_ctx = CpiContext::<_, 2>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 2>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::assign_with_seed(cpi_ctx, SYSTEM_SEED, &PROGRAM_OWNER)?;
         Ok(())
     }
@@ -339,7 +357,10 @@ pub mod accounts_test {
             base: ctx.accounts.base.cpi_handle(),
             to: ctx.accounts.to.cpi_handle_mut(),
         };
-        let cpi_ctx = CpiContext::<_, 3>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 3>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::transfer_with_seed(
             cpi_ctx,
             SYSTEM_TRANSFER_SEED,
@@ -357,7 +378,10 @@ pub mod accounts_test {
             recent_blockhashes: ctx.accounts.recent_blockhashes.cpi_handle(),
             rent: ctx.accounts.rent.cpi_handle(),
         };
-        let cpi_ctx = CpiContext::<_, 4>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 4>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::create_nonce_account(cpi_ctx, lamports, ctx.accounts.authority.address())?;
         Ok(())
     }
@@ -374,7 +398,10 @@ pub mod accounts_test {
             recent_blockhashes: ctx.accounts.recent_blockhashes.cpi_handle(),
             rent: ctx.accounts.rent.cpi_handle(),
         };
-        let cpi_ctx = CpiContext::<_, 5>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 5>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::create_nonce_account_with_seed(
             cpi_ctx,
             lamports,
@@ -391,7 +418,10 @@ pub mod accounts_test {
             authorized: ctx.accounts.authorized.cpi_handle(),
             recent_blockhashes: ctx.accounts.recent_blockhashes.cpi_handle(),
         };
-        let cpi_ctx = CpiContext::<_, 3>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 3>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::advance_nonce_account(cpi_ctx)?;
         Ok(())
     }
@@ -402,7 +432,10 @@ pub mod accounts_test {
             nonce: ctx.accounts.nonce.cpi_handle_mut(),
             authorized: ctx.accounts.authorized.cpi_handle(),
         };
-        let cpi_ctx = CpiContext::<_, 2>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 2>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::authorize_nonce_account(cpi_ctx, ctx.accounts.new_authority.address())?;
         Ok(())
     }
@@ -416,7 +449,10 @@ pub mod accounts_test {
             rent: ctx.accounts.rent.cpi_handle(),
             authorized: ctx.accounts.authorized.cpi_handle(),
         };
-        let cpi_ctx = CpiContext::<_, 5>::new_with_capacity(ctx.accounts.system_program.address(), cpi_accounts);
+        let cpi_ctx = CpiContext::<_, 5>::new_with_capacity(
+            ctx.accounts.system_program.address(),
+            cpi_accounts,
+        );
         system_program::withdraw_nonce_account(cpi_ctx, amount)?;
         Ok(())
     }

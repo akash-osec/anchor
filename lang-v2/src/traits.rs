@@ -256,14 +256,32 @@ impl Drop for CpiBorrowGuard {
     }
 }
 
-pub(crate) fn enter_cpi<'a>(handles: &[CpiHandle<'a>]) -> alloc::vec::Vec<CpiBorrowGuard> {
-    let mut guards = alloc::vec::Vec::new();
+#[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
+pub(crate) fn enter_cpi<'a, const N: usize>(
+    handles: &[CpiHandle<'a>],
+) -> Result<std::vec::Vec<CpiBorrowGuard>, ProgramError> {
+    let mut guards = std::vec::Vec::new();
     for handle in handles {
         if let Some(guard) = handle.enter_cpi() {
             guards.push(guard);
         }
     }
-    guards
+    Ok(guards)
+}
+
+#[cfg(any(target_os = "solana", target_arch = "bpf"))]
+pub(crate) fn enter_cpi<'a, const N: usize>(
+    handles: &[CpiHandle<'a>],
+) -> Result<crate::FixedVec<CpiBorrowGuard, N>, ProgramError> {
+    let mut guards = crate::FixedVec::new();
+    for handle in handles {
+        if let Some(guard) = handle.enter_cpi() {
+            guards
+                .try_push(guard)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+        }
+    }
+    Ok(guards)
 }
 
 /// Capacity-aware CPI account conversion used by [`crate::CpiContext`].
@@ -278,7 +296,9 @@ pub trait ToCpiAccountsWithCapacity<'a, const N: usize> {
 
     fn to_cpi_handles_with_capacity(&self) -> Result<crate::CpiHandleBuffer<'a, N>, ProgramError>;
 
-    fn optional_account_sentinel_flags_with_capacity(&self) -> Result<crate::BoolBuffer<N>, ProgramError>;
+    fn optional_account_sentinel_flags_with_capacity(
+        &self,
+    ) -> Result<crate::BoolBuffer<N>, ProgramError>;
 }
 
 pub trait AnchorAccount: Deref<Target = Self::Data> + Sized {
@@ -862,10 +882,7 @@ impl<T: crate::IdlAccountType> crate::IdlAccountType for Nested<T> {
     fn __idl_type_def() -> Option<&'static str> {
         T::__idl_type_def()
     }
-    fn __register_idl_deps(
-        accounts: &mut crate::IdlEntries,
-        types: &mut crate::IdlEntries,
-    ) {
+    fn __register_idl_deps(accounts: &mut crate::IdlEntries, types: &mut crate::IdlEntries) {
         T::__register_idl_deps(accounts, types);
     }
 }
