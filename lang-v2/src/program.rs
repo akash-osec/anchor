@@ -387,7 +387,15 @@ fn signers<'seeds>(signer_seeds: &'seeds [&'seeds [&'seeds [u8]]]) -> Vec<Signer
         .collect()
 }
 
-fn cpi_accounts<'a>(
+#[inline(always)]
+fn signer_from_seeds<'seeds>(seeds: &'seeds [&'seeds [u8]]) -> Signer<'seeds, 'seeds> {
+    // SAFETY: `Seed` has the same in-memory representation as `&[u8]`.
+    let cpi_seeds: &[Seed] =
+        unsafe { from_raw_parts(seeds.as_ptr() as *const Seed, seeds.len()) };
+    Signer::from(cpi_seeds)
+}
+
+pub(crate) fn cpi_accounts<'a>(
     account_handles: &[CpiHandle<'a>],
 ) -> Result<crate::CpiAccountBuffer<'a>, ProgramError> {
     let mut accounts = crate::CpiAccountBuffer::new();
