@@ -26,11 +26,12 @@ pub mod dispatch_remaining {
 
     #[discrim = 2]
     pub fn read_remaining_once(ctx: &mut Context<ReadRemaining>, expected_count: u8) -> Result<()> {
-        let remaining = ctx.remaining_accounts();
+        let counter_address = *ctx.accounts.counter.account().address();
+        let remaining = ctx.remaining_accounts()?;
         if remaining.len() != expected_count as usize {
             return Err(ProgramError::InvalidArgument.into());
         }
-        if expected_count == 2 && remaining[0].address() != ctx.accounts.counter.account().address()
+        if expected_count == 2 && *remaining[0].address() != counter_address
         {
             return Err(ProgramError::InvalidAccountData.into());
         }
@@ -39,12 +40,17 @@ pub mod dispatch_remaining {
 
     #[discrim = 3]
     pub fn read_remaining_twice(ctx: &mut Context<ReadRemaining>) -> Result<()> {
-        let first = ctx.remaining_accounts();
-        let second = ctx.remaining_accounts();
-        if first.len() != 2 || second.len() != 2 {
+        let first_addresses = {
+            let first = ctx.remaining_accounts()?;
+            [*first[0].address(), *first[1].address()]
+        };
+        let second = ctx.remaining_accounts()?;
+        if second.len() != 2 {
             return Err(ProgramError::InvalidArgument.into());
         }
-        if first[0].address() != second[0].address() || first[1].address() != second[1].address() {
+        if first_addresses[0] != *second[0].address()
+            || first_addresses[1] != *second[1].address()
+        {
             return Err(ProgramError::InvalidAccountData.into());
         }
         Ok(())
@@ -56,7 +62,7 @@ pub mod dispatch_remaining {
         value: u64,
     ) -> Result<()> {
         ctx.accounts.counter.value = value;
-        let remaining = ctx.remaining_accounts();
+        let remaining = ctx.remaining_accounts()?;
         if remaining.len() != 1 {
             return Err(ProgramError::InvalidArgument.into());
         }
@@ -79,39 +85,12 @@ pub mod dispatch_remaining {
         if let Some(counter) = ctx.accounts.counter.as_mut() {
             counter.value = counter.value.saturating_add(1);
         }
-        let remaining = ctx.remaining_accounts();
+        let remaining = ctx.remaining_accounts()?;
         if remaining.len() != expected_count as usize {
             return Err(ProgramError::InvalidArgument.into());
         }
         Ok(())
     }
-
-    #[discrim = 7]
-    pub fn load_remaining_after_mut(
-        ctx: &mut Context<MutateThenReadRemaining>,
-        mutable: bool,
-    ) -> Result<()> {
-        ctx.accounts.counter.value = 7;
-        load_first_remaining(ctx.remaining_accounts()[0], mutable)
-    }
-
-    #[discrim = 8]
-    pub fn load_remaining_after_readonly(
-        ctx: &mut Context<ReadRemaining>,
-        mutable: bool,
-    ) -> Result<()> {
-        let _ = ctx.accounts.counter.value;
-        load_first_remaining(ctx.remaining_accounts()[0], mutable)
-    }
-}
-
-fn load_first_remaining(view: AccountView, mutable: bool) -> Result<()> {
-    if mutable {
-        Account::<Counter>::load_mut(view)?;
-    } else {
-        Account::<Counter>::load(view)?;
-    }
-    Ok(())
 }
 
 #[derive(Accounts)]

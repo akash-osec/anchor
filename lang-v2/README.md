@@ -75,12 +75,19 @@ keep `Vec` aliases for client ergonomics; the host-only `Box<T>` forwarding
 implementation is excluded from Solana builds.
 
 This intentionally changes a few V2 surfaces: `transfer_with_seed` borrows a
-`&str`, Token-2022 UI amount return data is a bounded byte buffer, and
-`CpiContext::with_remaining_accounts` accepts a bounded account buffer. A
-program that needs unbounded `Vec`/`String` account data must use an inline
-fixed-capacity type such as `PodVec<T, MAX>` or provide its own allocator-backed
-wrapper. IDL emission and generated client JSON remain host-only and may use
-`std`; they are kept separate from the deployed runtime.
+`&str`, the SBF Token-2022 UI amount helper returns a bounded byte buffer, and
+SBF `CpiContext::with_remaining_accounts` borrows a caller-owned slice. Host
+builds retain the owned `String`, `Vec`, and CPI-buffer forms. A program that
+needs unbounded `Vec`/`String` account data must use an inline fixed-capacity
+type such as `PodVec<T, MAX>` or provide its own allocator-backed wrapper. IDL
+emission and generated client JSON remain host-only and may use `std`; they are
+kept separate from the deployed runtime.
+
+`Context::remaining_accounts()` also returns a borrowed mutable slice on SBF.
+The slice should be scoped before using the context again; callers that need
+an owned host value can copy it explicitly. If the remaining-account region
+exceeds `MAX_ACCOUNT_METAS` on SBF, the walk returns `InvalidArgument` instead
+of panicking or allocating.
 
 The boundary is split deliberately:
 
@@ -142,7 +149,7 @@ Here are some examples of optimizations present in Anchor v2.
 - **Typed `CpiHandle` lets us use pinocchio's unchecked CPI.** The unchecked path would be UB under stale-borrow aliasing, but the Rust borrow checker rules that out at compile time — so `CpiContext::invoke()` takes it. Turns UB into a compile error and drops one runtime check per CPI.
 - **`const-rent` feature** bakes the rent formula into the binary so `create_account` skips the `Rent::get()` sysvar. Saves ~85 CU per `create_account`.
 - **Guardrails compile away** when you drop the feature. `check_program_id` / the `is_writable` check in `load_mut` just aren't emitted. Smaller binary in prod.
-- **`remaining_accounts()` is lazy-cached.** First call walks the account cursor; subsequent calls return a clone of the cached fixed-capacity buffer. Zero overhead for instructions that don't touch it.
+- **`remaining_accounts()` is a lazy-cached borrowed slice.** The first call walks the account cursor; subsequent calls reuse the cached views without copying a fixed-capacity buffer. Instructions that do not touch it pay no walk cost.
 
 ## Account types
 
