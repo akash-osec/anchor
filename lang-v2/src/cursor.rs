@@ -26,6 +26,12 @@ const STATIC_ACCOUNT_DATA: usize =
 /// 8-byte alignment required between account records on BPF.
 const BPF_ALIGN_OF_U128: usize = 8;
 
+/// Marker stored in the otherwise-unused padding of a duplicate record once
+/// the cursor has consumed it. The loader's `borrow_state` byte is reused by
+/// `AccountView` as the live borrow counter, so it cannot be used later to
+/// recover the duplicate index during a lazy remaining-account walk.
+const DUPLICATE_METADATA_MASK: u32 = 0x8000_0000;
+
 /// Cursor into the serialized instruction input buffer.
 ///
 /// Advances a raw pointer past one account record per [`next`](AccountCursor::next)
@@ -138,9 +144,9 @@ impl AccountCursor {
         let mut current = 0u8;
         while current < index {
             let account = ptr as *mut RuntimeAccount;
-            let borrow_state = (*account).borrow_state;
             ptr = ptr.add(core::mem::size_of::<u64>());
-            if borrow_state == NON_DUP_MARKER {
+            let padding = u32::from_le_bytes((*account).padding);
+            if padding & DUPLICATE_METADATA_MASK == 0 {
                 ptr = ptr.add(STATIC_ACCOUNT_DATA + (*account).data_len as usize);
                 let addr = ptr.addr();
                 let aligned = (addr + (BPF_ALIGN_OF_U128 - 1)) & !(BPF_ALIGN_OF_U128 - 1);
@@ -159,12 +165,12 @@ impl AccountCursor {
         let mut target = index;
         loop {
             let account = self.raw_account_at(target);
-            let borrow_state = (*account).borrow_state;
-            if target == 0 || borrow_state == NON_DUP_MARKER {
+            let padding = u32::from_le_bytes((*account).padding);
+            if padding & DUPLICATE_METADATA_MASK == 0 {
                 (*account).padding = u32::to_le_bytes((*account).data_len as u32);
                 return AccountView::new_unchecked(account);
             }
-            target = borrow_state;
+            target = (padding & !DUPLICATE_METADATA_MASK) as u8;
         }
     }
 
@@ -222,6 +228,11 @@ impl AccountCursor {
             self.ptr = self.ptr.add(aligned - addr);
             AccountView::new_unchecked(account)
         } else {
+            // Preserve the duplicate index before any AccountView borrow can
+            // repurpose `borrow_state` as its live borrow counter. The
+            // duplicate slot is only eight bytes wide, so its four-byte
+            // padding field is safe scratch storage for this metadata.
+            (*account).padding = u32::to_le_bytes(DUPLICATE_METADATA_MASK | borrow_state as u32);
             // Duplicate: look up the earlier slot. Safe because the
             // runtime only emits dup indices that are strictly less
             // than the current `consumed`, so the slot is already
