@@ -34,7 +34,10 @@ where
     T: ToCpiAccountsWithCapacity<'a, N>,
 {
     pub accounts: T,
+    #[cfg(not(target_os = "solana"))]
     pub remaining_accounts: crate::CpiHandleBuffer<'a, N>,
+    #[cfg(target_os = "solana")]
+    pub remaining_accounts: &'a [CpiHandle<'a>],
     pub program: &'a Address,
     pub signer_seeds: &'a [&'a [&'a [u8]]],
 }
@@ -49,7 +52,7 @@ where
         Self {
             accounts,
             program,
-            remaining_accounts: crate::CpiHandleBuffer::new(),
+            remaining_accounts: Self::empty_remaining_accounts(),
             signer_seeds: &[],
         }
     }
@@ -63,9 +66,21 @@ where
         Self {
             accounts,
             program,
-            remaining_accounts: crate::CpiHandleBuffer::new(),
+            remaining_accounts: Self::empty_remaining_accounts(),
             signer_seeds,
         }
+    }
+
+    #[cfg(not(target_os = "solana"))]
+    #[inline]
+    fn empty_remaining_accounts() -> crate::CpiHandleBuffer<'a> {
+        crate::CpiHandleBuffer::new()
+    }
+
+    #[cfg(target_os = "solana")]
+    #[inline]
+    fn empty_remaining_accounts() -> &'a [CpiHandle<'a>] {
+        &[]
     }
 
     #[must_use]
@@ -75,7 +90,16 @@ where
     }
 
     #[must_use]
+    #[cfg(not(target_os = "solana"))]
     pub fn with_remaining_accounts(mut self, ra: crate::CpiHandleBuffer<'a, N>) -> Self {
+        self.remaining_accounts = ra;
+        self
+    }
+
+    /// Attach borrowed remaining accounts without copying a maximum-sized
+    /// inline buffer into the CPI context. The slice must outlive the CPI.
+    #[cfg(target_os = "solana")]
+    pub fn with_remaining_accounts(mut self, ra: &'a [CpiHandle<'a>]) -> Self {
         self.remaining_accounts = ra;
         self
     }
@@ -91,7 +115,11 @@ where
 
         // Append remaining accounts using the handle's writable/signer flags
         // so PDA remaining accounts marked with `as_signer()` emit signer metas.
-        for handle in &self.remaining_accounts {
+        #[cfg(not(target_os = "solana"))]
+        let remaining_accounts = &self.remaining_accounts;
+        #[cfg(target_os = "solana")]
+        let remaining_accounts = self.remaining_accounts;
+        for handle in remaining_accounts {
             instruction_accounts
                 .try_push(InstructionAccount::new(
                     handle.address(),

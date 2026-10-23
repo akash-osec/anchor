@@ -1,4 +1,5 @@
-//! Tests for `AccountCursor` and `Context::remaining_accounts`.
+//! Tests for `AccountCursor`, `AccountBitvec`, and
+//! `Context::remaining_accounts`.
 //!
 //! These walks are the hot path between the SBF loader's serialized
 //! input buffer and the typed-account machinery. Coverage here pins
@@ -12,22 +13,27 @@
 //!      yields the earlier `AccountView` from the lookup array — not
 //!      an `AccountView` pointing at the dup slot.
 //!   3. `Context::remaining_accounts` walks the cursor lazily on first
-//!      call, caches the resulting `Vec<AccountView>`, and returns a
-//!      fresh clone on each subsequent call without advancing the
-//!      cursor or double-populating the cache.
+//!      call, caches the resulting account views, and returns borrowed
+//!      access on subsequent calls without advancing the cursor or copying
+//!      the cache.
 //!
 //! Run: `cargo test -p anchor-lang --features testing --test cursor_and_remaining_accounts`
 
 use {
     anchor_lang::{
-        cursor::AccountCursor,
+        cursor::{mut_mask_or_shifted, mut_mask_set_bit, AccountBitvec, AccountCursor},
         testing::{AccountRecord, SbfInputBuffer},
-        AccountViewCompat, Bumps, Context,
+        AccountViewCompat, Bumps, Context, MutMask,
     },
     core::mem::MaybeUninit,
     pinocchio::account::AccountView,
     solana_address::Address,
 };
+
+#[cfg(target_os = "solana")]
+use anchor_lang::MAX_ACCOUNT_METAS;
+#[cfg(target_os = "solana")]
+use solana_program_error::ProgramError;
 
 // A placeholder header struct that implements `Bumps` so we can construct
 // a `Context<DummyHeader>` without needing the full `#[derive(Accounts)]`
@@ -36,6 +42,12 @@ struct DummyHeader;
 impl Bumps for DummyHeader {
     type Bumps = ();
 }
+
+/// No declared mut fields — these tests don't exercise the
+/// trailing-dup-vs-declared-mut check (that's covered by
+/// `remaining_accounts_mut_check.rs`).
+const EMPTY_MUT_MASK: &[u64; 4] = &[0, 0, 0, 0];
+
 fn unique_addr(i: u8) -> [u8; 32] {
     let mut a = [0u8; 32];
     a[0] = i + 1; // avoid [0;32] which collides with the System program id.
@@ -138,8 +150,12 @@ fn cursor_walk_n_returns_all_views_at_once() {
     let mut cursor =
         unsafe { AccountCursor::new(sbf.as_mut_ptr(), lookup.as_mut_ptr() as *mut AccountView) };
 
-    let views = unsafe { cursor.walk_n(4) };
+    let (views, dups) = unsafe { cursor.walk_n(4) };
     assert_eq!(views.len(), 4);
+    assert!(
+        dups.is_none(),
+        "no duplicates present → bitvec stays lazy None"
+    );
     for (i, v) in views.iter().enumerate() {
         assert_eq!(v.address().to_bytes(), unique_addr(i as u8));
     }
@@ -149,7 +165,7 @@ fn cursor_walk_n_returns_all_views_at_once() {
 // -- Duplicate resolution --------------------------------------------------
 
 #[test]
-fn cursor_dup_resolves_to_earlier_view() {
+fn cursor_dup_resolves_to_earlier_view_and_flags_bitvec() {
     // Record 2 is a dup of record 0. The cursor must return the
     // `AccountView` stored at `lookup[0]` (same address as record 0),
     // not an AccountView pointing at the dup slot.
@@ -159,13 +175,19 @@ fn cursor_dup_resolves_to_earlier_view() {
     let mut cursor =
         unsafe { AccountCursor::new(sbf.as_mut_ptr(), lookup.as_mut_ptr() as *mut AccountView) };
 
-    let views = unsafe { cursor.walk_n(3) };
+    let (views, dups) = unsafe { cursor.walk_n(3) };
 
     assert_eq!(views[0].address().to_bytes(), unique_addr(0));
     assert_eq!(views[1].address().to_bytes(), unique_addr(1));
     // Dup slot — resolved to lookup[0].
     assert_eq!(views[2].address().to_bytes(), unique_addr(0));
 
+    // Bitvec records BOTH the dup position (2) and the earlier instance
+    // it points at (0). Used by the dispatcher to reject `mut`+dup combos.
+    let bitvec = dups.expect("dup detected → bitvec materialized");
+    assert!(bitvec.get(0), "original index must be flagged");
+    assert!(!bitvec.get(1), "index 1 is a fresh non-dup");
+    assert!(bitvec.get(2), "dup index must be flagged");
 }
 
 // -- Context::remaining_accounts ------------------------------------------
@@ -190,9 +212,10 @@ fn remaining_accounts_walks_trailing_region() {
         (),
         &mut cursor,
         /*remaining_num*/ 3,
+        MutMask::Static(EMPTY_MUT_MASK),
     );
 
-    let remaining = ctx.remaining_accounts();
+    let remaining = ctx.remaining_accounts().expect("walk");
     assert_eq!(remaining.len(), 3);
     assert_eq!(remaining[0].address().to_bytes(), unique_addr(2));
     assert_eq!(remaining[1].address().to_bytes(), unique_addr(3));
@@ -220,15 +243,15 @@ fn remaining_account_views_expose_compat_helpers() {
         (),
         &mut cursor,
         /*remaining_num*/ 2,
+        MutMask::Static(EMPTY_MUT_MASK),
     );
 
-    let remaining = ctx.remaining_accounts();
-    let mut account = remaining[0];
-    assert_eq!(account.key().to_bytes(), unique_addr(1));
-    assert!(!account.data_is_empty());
-    assert_eq!(account.try_data_len().unwrap(), 16);
-    assert_eq!(account.try_borrow_data().unwrap().len(), 16);
-    assert_eq!(account.try_borrow_mut_data().unwrap().len(), 16);
+    let remaining = ctx.remaining_accounts().expect("walk");
+    assert_eq!(remaining[0].key().to_bytes(), unique_addr(1));
+    assert!(!remaining[0].data_is_empty());
+    assert_eq!(remaining[0].try_data_len().unwrap(), 16);
+    assert_eq!(remaining[0].try_borrow_data().unwrap().len(), 16);
+    assert_eq!(remaining[0].try_borrow_mut_data().unwrap().len(), 16);
 }
 
 #[test]
@@ -246,11 +269,38 @@ fn remaining_accounts_returns_empty_when_nothing_trails() {
         (),
         &mut cursor,
         0,
+        MutMask::Static(EMPTY_MUT_MASK),
     );
 
-    assert!(ctx.remaining_accounts().is_empty());
+    assert!(ctx.remaining_accounts().expect("walk").is_empty());
     // Second call on empty — still empty, no cache bookkeeping bug.
-    assert!(ctx.remaining_accounts().is_empty());
+    assert!(ctx.remaining_accounts().expect("walk").is_empty());
+}
+
+#[cfg(target_os = "solana")]
+#[test]
+fn remaining_accounts_over_inline_budget_returns_error() {
+    let records: Vec<_> = (0..(MAX_ACCOUNT_METAS + 1) as u8).map(non_dup).collect();
+    let mut sbf = SbfInputBuffer::build(&records);
+    let mut lookup = fresh_lookup();
+    let mut cursor =
+        unsafe { AccountCursor::new(sbf.as_mut_ptr(), lookup.as_mut_ptr() as *mut AccountView) };
+    let _ = unsafe { cursor.walk_n(0) };
+
+    let program_id = Address::new_from_array([0x42; 32]);
+    let mut ctx: Context<'_, DummyHeader> = Context::new(
+        &program_id,
+        DummyHeader,
+        (),
+        &mut cursor,
+        records.len() as u8,
+        MutMask::Static(EMPTY_MUT_MASK),
+    );
+
+    assert_eq!(
+        ctx.remaining_accounts().unwrap_err(),
+        ProgramError::InvalidArgument
+    );
 }
 
 #[test]
@@ -272,18 +322,21 @@ fn remaining_accounts_caches_and_does_not_re_walk_cursor() {
         (),
         &mut cursor,
         /*remaining_num*/ 2,
+        MutMask::Static(EMPTY_MUT_MASK),
     );
 
-    let first = ctx.remaining_accounts();
-    let second = ctx.remaining_accounts();
+    let first_addresses = {
+        let first = ctx.remaining_accounts().expect("first walk");
+        [first[0].address().to_bytes(), first[1].address().to_bytes()]
+    };
+    let second = ctx.remaining_accounts().expect("second walk");
 
     // Structural equality via address, since AccountView is Copy and the
     // cache returns a clone each call.
-    assert_eq!(first.len(), 2);
+    assert_eq!(first_addresses.len(), 2);
     assert_eq!(second.len(), 2);
-    for (a, b) in first.iter().zip(second.iter()) {
-        assert_eq!(a.address().to_bytes(), b.address().to_bytes());
-    }
+    assert_eq!(first_addresses[0], second[0].address().to_bytes());
+    assert_eq!(first_addresses[1], second[1].address().to_bytes());
     // Cursor must have advanced by exactly `remaining_num` (2), not
     // twice that — verifies caching short-circuits the walk.
     //
@@ -292,4 +345,90 @@ fn remaining_accounts_caches_and_does_not_re_walk_cursor() {
     // directly; drop `ctx` first to release the borrow.
     drop(ctx);
     assert_eq!(cursor.consumed(), consumed_before + 2);
+}
+
+// -- AccountBitvec + mask helpers -----------------------------------------
+
+#[test]
+fn bitvec_intersects_matches_derive_duplicate_mask() {
+    // Drive bit population through the cursor — `AccountBitvec::set` is
+    // module-private, so the only legitimate way to populate one outside
+    // the crate is to run a dup record through the cursor.
+    let records = [non_dup(0), non_dup(1), AccountRecord::Dup { index: 0 }];
+    let mut sbf = SbfInputBuffer::build(&records);
+    let mut lookup = fresh_lookup();
+    let mut cursor =
+        unsafe { AccountCursor::new(sbf.as_mut_ptr(), lookup.as_mut_ptr() as *mut AccountView) };
+    let (_views, dups) = unsafe { cursor.walk_n(3) };
+    let bv = dups.expect("dup present");
+
+    // MUT_MASK marking index 0 as a mut field: intersects true.
+    let mask_hits_dup = mut_mask_set_bit([0u64; 4], 0);
+    assert!(bv.intersects(&mask_hits_dup));
+
+    // MUT_MASK that only flags an unused index (4): intersects false.
+    let mask_clean = mut_mask_set_bit([0u64; 4], 4);
+    assert!(!bv.intersects(&mask_clean));
+}
+
+#[test]
+fn bitvec_get_reports_default_as_all_clear() {
+    // `Default` zeros the four u64s — get() of any index must be false.
+    let bv = AccountBitvec::default();
+    for i in [0u8, 1, 31, 63, 64, 127, 128, 191, 192, 255] {
+        assert!(!bv.get(i), "bit {i} unexpectedly set in a default bitvec");
+    }
+}
+
+// -- mut_mask helpers ----------------------------------------------------
+
+#[test]
+fn mut_mask_set_bit_sets_the_single_bit_in_the_right_word() {
+    // Pick representative bits across all four u64 words.
+    for bit in [0usize, 7, 63, 64, 127, 128, 191, 192, 255] {
+        let m = mut_mask_set_bit([0u64; 4], bit);
+        let word = bit / 64;
+        let offset = bit % 64;
+        assert_eq!(m[word], 1u64 << offset, "bit {bit} set wrong word/offset");
+        for (w, val) in m.iter().enumerate() {
+            if w != word {
+                assert_eq!(*val, 0, "bit {bit} leaked into word {w}");
+            }
+        }
+    }
+}
+
+#[test]
+fn mut_mask_set_bit_is_idempotent_or_with_existing_bits() {
+    // Calling twice on non-overlapping bits OR-merges them.
+    let m = mut_mask_set_bit([0u64; 4], 3);
+    let m = mut_mask_set_bit(m, 200);
+    assert_eq!(m[0], 1u64 << 3);
+    assert_eq!(m[3], 1u64 << (200 - 192));
+}
+
+#[test]
+fn mut_mask_or_shifted_with_zero_shift_ors_in_place() {
+    let parent = [0u64, 0, 0, 0];
+    let child = [0xAAu64, 0xBBu64, 0xCCu64, 0xDDu64];
+    let merged = mut_mask_or_shifted(parent, child, 0);
+    assert_eq!(merged, child);
+}
+
+#[test]
+fn mut_mask_or_shifted_shifts_by_word_and_bit() {
+    // Child has bit 0 set in word 0. Shift by 65 → land in word 1, bit 1.
+    let child = mut_mask_set_bit([0u64; 4], 0);
+    let merged = mut_mask_or_shifted([0u64; 4], child, 65);
+    let expected = mut_mask_set_bit([0u64; 4], 65);
+    assert_eq!(merged, expected);
+}
+
+#[test]
+fn mut_mask_or_shifted_past_end_is_dropped() {
+    // Shifting into a word ≥ 4 must silently drop (no panic, no overflow).
+    // The const fn is called at compile time and must stay total.
+    let child = mut_mask_set_bit([0u64; 4], 0);
+    let merged = mut_mask_or_shifted([0u64; 4], child, 256);
+    assert_eq!(merged, [0u64; 4], "overflow bits must be dropped");
 }

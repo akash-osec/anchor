@@ -207,31 +207,24 @@ pub(crate) fn validate_instruction_accounts<'a>(
         program_id,
         account_handles,
         optional_sentinel_flags,
-    )?;
-
-    for (account, binding) in instruction_accounts.iter().zip(bindings) {
-        let Some(handle_index) = binding else {
-            continue;
-        };
-        let handle = &account_handles[handle_index];
-
-        if account.is_writable {
-            if handle.requires_borrow_check() {
-                handle.account_view().check_borrow_mut()?;
+        |account, handle| {
+            if account.is_writable {
+                if handle.requires_borrow_check() {
+                    handle.account_view().check_borrow_mut()?;
+                }
+            } else if handle.requires_borrow_check() {
+                handle.account_view().check_borrow()?;
             }
-        } else if handle.requires_borrow_check() {
-            handle.account_view().check_borrow()?;
-        }
 
-        if enforce_signers && account.is_signer {
-            require!(
-                handle.account_view().is_signer(),
-                ProgramError::MissingRequiredSignature
-            );
-        }
-    }
-
-    Ok(())
+            if enforce_signers && account.is_signer {
+                require!(
+                    handle.account_view().is_signer(),
+                    ProgramError::MissingRequiredSignature
+                );
+            }
+            Ok(())
+        },
+    )
 }
 
 fn is_optional_instruction_account_sentinel_candidate(
@@ -265,10 +258,8 @@ fn required_cpi_account_count<'a>(
         program_id,
         account_handles,
         optional_sentinel_flags,
-    )?
-    .into_iter()
-    .flatten()
-    .count())
+        |_, _| Ok(()),
+    )
 }
 
 fn resolve_instruction_account_bindings<'a>(
@@ -318,39 +309,46 @@ fn resolve_instruction_account_bindings<'a>(
 
     let mut bindings = Vec::with_capacity(instruction_accounts.len());
     let mut handle_index = 0;
+    let mut cpi_account_count = 0;
 
     for (instruction_index, account) in instruction_accounts.iter().enumerate() {
-        // Prefer skipping intentional Option::None sentinels so a later
-        // required program-id account can still consume a matching handle.
         let can_skip = is_skippable_optional_sentinel(
             program_id,
             account,
             optional_sentinel_flags,
             instruction_index,
-        ) && can_match[(instruction_index + 1) * cols + handle_index];
+        ) && (handle_index >= account_handles.len()
+            || instruction_accounts[instruction_index + 1..]
+                .iter()
+                .enumerate()
+                .any(|(offset, later)| {
+                    let later_index = instruction_index + 1 + offset;
+                    !is_skippable_optional_sentinel(
+                        program_id,
+                        later,
+                        optional_sentinel_flags,
+                        later_index,
+                    ) && instruction_account_matches_handle(later, &account_handles[handle_index])
+                }));
         if can_skip {
-            bindings.push(None);
             continue;
         }
 
-        let can_consume = handle_index < account_handles.len()
-            && instruction_account_matches_handle(account, &account_handles[handle_index])
-            && can_match[(instruction_index + 1) * cols + (handle_index + 1)];
-        if can_consume {
-            bindings.push(Some(handle_index));
-            handle_index += 1;
-            continue;
+        let Some(handle) = account_handles.get(handle_index) else {
+            return Err(ProgramError::NotEnoughAccountKeys);
+        };
+        if !instruction_account_matches_handle(account, handle) {
+            return Err(ProgramError::InvalidArgument);
         }
 
-        debug_assert!(
-            false,
-            "validated instruction-account matching must reconstruct"
-        );
-        bindings.push(None);
+        on_match(account, handle)?;
+        handle_index += 1;
+        cpi_account_count += 1;
     }
 
-    Ok(bindings)
-}
+    if handle_index != account_handles.len() {
+        return Err(ProgramError::InvalidArgument);
+    }
 
 fn minimum_required_handle_count(
     instruction_accounts: &[InstructionAccount<'_>],
@@ -387,14 +385,20 @@ fn signers<'seeds>(signer_seeds: &'seeds [&'seeds [&'seeds [u8]]]) -> Vec<Signer
         .collect()
 }
 
-fn cpi_accounts<'a>(account_handles: &[CpiHandle<'a>]) -> Vec<MaybeUninit<CpiAccount<'a>>> {
-    let mut accounts = Vec::with_capacity(account_handles.len());
-    // SAFETY: `MaybeUninit<CpiAccount>` does not require initialization.
-    unsafe { accounts.set_len(account_handles.len()) };
-
-    for (handle, slot) in account_handles.iter().zip(accounts.iter_mut()) {
-        CpiAccount::init_from_account_view(handle.account_view(), slot);
+fn cpi_accounts<'a>(
+    account_handles: &[CpiHandle<'a>],
+) -> Result<crate::CpiAccountBuffer<'a>, ProgramError> {
+    let mut accounts = crate::CpiAccountBuffer::new();
+    for handle in account_handles {
+        let mut slot = MaybeUninit::uninit();
+        CpiAccount::init_from_account_view(handle.account_view(), &mut slot);
+        #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
+        accounts.push(slot);
+        #[cfg(any(target_os = "solana", target_arch = "bpf"))]
+        accounts
+            .try_push(slot)
+            .map_err(|_| ProgramError::InvalidArgument)?;
     }
 
-    accounts
+    Ok(accounts)
 }
