@@ -55,6 +55,9 @@ pub use solana_msg;
 #[macro_export]
 macro_rules! msg {
     ($($arg:tt)*) => {{
+        #[cfg(any(target_os = "solana", target_arch = "bpf"))]
+        $crate::sol_log_fmt(core::format_args!($($arg)*));
+        #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
         $crate::solana_msg::msg!($($arg)*);
     }};
 }
@@ -242,6 +245,7 @@ pub mod solana_program {
         pub type Pubkey = crate::Address;
     }
 
+    #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
     pub mod rent {
         pub use solana_sysvar::rent::*;
     }
