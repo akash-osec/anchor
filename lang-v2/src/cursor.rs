@@ -59,7 +59,6 @@ pub struct AccountCursor {
     /// into `lookup` and as a runtime counter exposed to callers for
     /// bookkeeping (e.g., remaining-accounts walks).
     consumed: u8,
-
 }
 impl AccountCursor {
     /// Create a fresh cursor at the start of the serialized accounts
@@ -97,27 +96,6 @@ impl AccountCursor {
         self.consumed
     }
 
-    /// Returns views already written to the cursor's lookup table.
-    ///
-    /// The caller must only request entries that have already been yielded by
-    /// [`Self::next`]. This lets callers borrow the resolved accounts without
-    /// copying them into another fixed-capacity buffer.
-    #[inline(always)]
-    ///
-    /// # Safety
-    ///
-    /// The returned lifetime must not outlive the lookup table supplied when
-    /// this cursor was created. The dispatcher guarantees that table remains
-    /// alive for the complete instruction.
-    pub(crate) unsafe fn views<'lookup>(&self, start: u8, len: u8) -> &'lookup [AccountView] {
-        // SAFETY: `start..start + len` was populated by previous `next` calls
-        // and the dispatcher-provided lookup table remains live for the
-        // duration of the instruction.
-        unsafe {
-            core::slice::from_raw_parts(self.lookup.add(start as usize), len as usize)
-        }
-    }
-
     /// Walk N accounts in a tight loop, storing views in the lookup array.
     /// Returns a slice of the walked views.
     /// This avoids interleaving cursor math with validation logic, letting
@@ -149,31 +127,6 @@ impl AccountCursor {
             slot.write(self.next());
         }
         core::slice::from_raw_parts(output.as_ptr() as *const AccountView, n)
-    }
-
-    /// Walk N accounts into caller-provided storage and return the initialized
-    /// view slice. Generated dispatch uses this method so the storage is sized
-    /// to the instruction's flattened account header rather than the maximum
-    /// transaction account count.
-    ///
-    /// # Safety
-    ///
-    /// The output slice must have capacity for at least `n` views, and the
-    /// cursor must have at least `n` account records remaining.
-    #[inline(always)]
-    pub unsafe fn walk_n_into<'views>(
-        &mut self,
-        n: usize,
-        output: &'views mut [MaybeUninit<AccountView>],
-    ) -> (&'views [AccountView], Option<&AccountBitvec>) {
-        debug_assert!(output.len() >= n);
-        for slot in output.iter_mut().take(n) {
-            slot.write(self.next());
-        }
-        (
-            core::slice::from_raw_parts(output.as_ptr() as *const AccountView, n),
-            self.duplicate.as_ref(),
-        )
     }
 
     /// Locate the raw account record for a serialized slot. Duplicate slots
@@ -208,10 +161,18 @@ impl AccountCursor {
             let account = self.raw_account_at(target);
             let borrow_state = (*account).borrow_state;
             if target == 0 || borrow_state == NON_DUP_MARKER {
+                (*account).padding = u32::to_le_bytes((*account).data_len as u32);
                 return AccountView::new_unchecked(account);
             }
             target = borrow_state;
         }
+    }
+
+    /// Resolve an account by serialized index without materializing a
+    /// transaction-wide view table.
+    #[inline(always)]
+    pub(crate) unsafe fn view_at(&self, index: u8) -> AccountView {
+        self.resolve_without_lookup(index)
     }
 
     /// Advance past one account record and return its `AccountView`.

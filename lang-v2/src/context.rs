@@ -1,5 +1,6 @@
 use {
     crate::cursor::AccountCursor,
+    core::marker::PhantomData,
     pinocchio::{account::AccountView, address::Address},
 };
 
@@ -19,27 +20,67 @@ pub struct Context<'a, T: Bumps> {
     /// pass them in as arguments.
     pub bumps: T::Bumps,
 
-    /// Holds either a cursor into the serialized input buffer, pointing to the
-    /// *start* of the remaining-accounts region (after `try_accounts`
-    /// has consumed exactly `T::HEADER_SIZE` declared accounts). Used
-    /// by [`Self::remaining_accounts`] for on-demand walking.
-    /// After `remaining_accounts` is called this holds the range of views
-    /// already written to the cursor's lookup table.
-    remaining_accounts: RemainingAccounts,
+    /// Holds the cursor and the serialized range of trailing accounts after
+    /// `try_accounts` has consumed the declared account header.
+    remaining_accounts: Option<(u8, u8)>,
+    remaining_num: u8,
 
-    /// The instruction's account lookup table. Remaining accounts are exposed
-    /// as a borrowed slice into this table instead of being copied into a
-    /// second fixed-capacity buffer.
     cursor: &'a mut AccountCursor,
 }
 
-enum RemainingAccounts {
-    Unparsed {
-        /// Number of accounts remaining after the initially declared region
-        remaining: u8,
-    },
-    /// Cached range of views in the cursor's lookup table.
-    Cached { start: u8, len: u8 },
+/// Borrowed access to trailing accounts without allocating a view array.
+#[derive(Clone, Copy)]
+pub struct RemainingAccounts<'a> {
+    cursor: *const AccountCursor,
+    start: u8,
+    len: u8,
+    marker: PhantomData<&'a AccountView>,
+}
+
+impl<'a> RemainingAccounts<'a> {
+    #[inline]
+    pub const fn len(self) -> usize {
+        self.len as usize
+    }
+
+    #[inline]
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
+    }
+
+    #[inline]
+    pub fn get(self, index: usize) -> Option<AccountView> {
+        let index = u8::try_from(index).ok()?;
+        if index >= self.len {
+            return None;
+        }
+        // SAFETY: the cursor remains valid for the view lifetime.
+        Some(unsafe { (*self.cursor).view_at(self.start + index) })
+    }
+
+    #[inline]
+    pub fn iter(self) -> RemainingAccountsIter<'a> {
+        RemainingAccountsIter {
+            accounts: self,
+            index: 0,
+        }
+    }
+}
+
+pub struct RemainingAccountsIter<'a> {
+    accounts: RemainingAccounts<'a>,
+    index: u8,
+}
+
+impl Iterator for RemainingAccountsIter<'_> {
+    type Item = AccountView;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let account = self.accounts.get(self.index as usize);
+        self.index = self.index.saturating_add(1);
+        account
+    }
 }
 
 impl<'a, T: Bumps> Context<'a, T> {
@@ -55,46 +96,36 @@ impl<'a, T: Bumps> Context<'a, T> {
             program_id,
             accounts,
             bumps,
-            remaining_accounts: RemainingAccounts::Unparsed {
-                remaining: remaining_num,
-            },
+            remaining_accounts: None,
+            remaining_num,
             cursor,
         }
     }
 
-    /// Returns trailing accounts beyond the declared `T` fields as a borrowed
-    /// slice into the instruction's account lookup table. The first call
-    /// walks the cursor and caches the resulting range; subsequent calls
-    /// replay that range.
-    pub fn remaining_accounts(&mut self) -> &'a [AccountView] {
-        if let RemainingAccounts::Unparsed { .. } = self.remaining_accounts {
-            let (start, len) = self.walk_remaining();
-            self.remaining_accounts = RemainingAccounts::Cached { start, len };
-        }
-
-        match &self.remaining_accounts {
-            RemainingAccounts::Cached { start, len } => {
-                // SAFETY: the dispatcher-owned lookup table lives for `'a`,
-                // which is also the lifetime of this instruction context.
-                unsafe { self.cursor.views(*start, *len) }
+    /// Returns a borrowed lazy view of accounts beyond the declared fields.
+    /// The cursor advances once; repeated calls return the same range.
+    pub fn remaining_accounts(&mut self) -> RemainingAccounts<'a> {
+        let (start, len) = match self.remaining_accounts {
+            Some(range) => range,
+            None => {
+                let start = self.cursor.consumed();
+                for _ in 0..self.remaining_num {
+                    // SAFETY: cursor is positioned at the start of the remaining
+                    // region and `remaining_num` is the exact number of accounts
+                    // to walk.
+                    unsafe { self.cursor.next() };
+                }
+                let range = (start, self.remaining_num);
+                self.remaining_accounts = Some(range);
+                range
             }
-            RemainingAccounts::Unparsed { .. } => unreachable!(),
-        }
-    }
-
-    fn walk_remaining(&mut self) -> (u8, u8) {
-        let remaining = match self.remaining_accounts {
-            RemainingAccounts::Unparsed { remaining } => remaining,
-            RemainingAccounts::Cached { .. } => unreachable!(),
         };
-        let start = self.cursor.consumed();
-        for _ in 0..remaining {
-            // SAFETY: cursor is positioned at the start of the remaining
-            // region and `remaining_num` is the exact number of accounts
-            // to walk.
-            unsafe { self.cursor.next() };
+        RemainingAccounts {
+            cursor: self.cursor as *const AccountCursor,
+            start,
+            len,
+            marker: PhantomData,
         }
-        (start, remaining)
     }
 }
 

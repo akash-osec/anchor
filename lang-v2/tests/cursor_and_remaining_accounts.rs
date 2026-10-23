@@ -165,7 +165,6 @@ fn cursor_dup_resolves_to_earlier_view() {
     assert_eq!(views[1].address().to_bytes(), unique_addr(1));
     // Dup slot — resolved to lookup[0].
     assert_eq!(views[2].address().to_bytes(), unique_addr(0));
-
 }
 
 // -- Context::remaining_accounts ------------------------------------------
@@ -194,9 +193,18 @@ fn remaining_accounts_walks_trailing_region() {
 
     let remaining = ctx.remaining_accounts();
     assert_eq!(remaining.len(), 3);
-    assert_eq!(remaining[0].address().to_bytes(), unique_addr(2));
-    assert_eq!(remaining[1].address().to_bytes(), unique_addr(3));
-    assert_eq!(remaining[2].address().to_bytes(), unique_addr(4));
+    assert_eq!(
+        remaining.get(0).unwrap().address().to_bytes(),
+        unique_addr(2)
+    );
+    assert_eq!(
+        remaining.get(1).unwrap().address().to_bytes(),
+        unique_addr(3)
+    );
+    assert_eq!(
+        remaining.get(2).unwrap().address().to_bytes(),
+        unique_addr(4)
+    );
 }
 
 #[test]
@@ -223,7 +231,7 @@ fn remaining_account_views_expose_compat_helpers() {
     );
 
     let remaining = ctx.remaining_accounts();
-    let mut account = remaining[0];
+    let mut account = remaining.get(0).unwrap();
     assert_eq!(account.key().to_bytes(), unique_addr(1));
     assert!(!account.data_is_empty());
     assert_eq!(account.try_data_len().unwrap(), 16);
@@ -240,13 +248,8 @@ fn remaining_accounts_returns_empty_when_nothing_trails() {
     let _ = unsafe { cursor.walk_n(2) };
 
     let program_id = Address::new_from_array([0x42; 32]);
-    let mut ctx: Context<'_, DummyHeader> = Context::new(
-        &program_id,
-        DummyHeader,
-        (),
-        &mut cursor,
-        0,
-    );
+    let mut ctx: Context<'_, DummyHeader> =
+        Context::new(&program_id, DummyHeader, (), &mut cursor, 0);
 
     assert!(ctx.remaining_accounts().is_empty());
     // Second call on empty — still empty, no cache bookkeeping bug.

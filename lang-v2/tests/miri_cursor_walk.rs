@@ -271,17 +271,12 @@ fn no_lookup_walk_resolves_duplicates_without_a_256_slot_table() {
         AccountRecord::Dup { index: 1 },
     ]);
     let mut cursor = unsafe { AccountCursor::new_without_lookup(input.as_mut_ptr()) };
-    let mut storage: [MaybeUninit<AccountView>; 3] =
-        [const { MaybeUninit::uninit() }; 3];
+    let mut storage: [MaybeUninit<AccountView>; 3] = [const { MaybeUninit::uninit() }; 3];
 
-    let (views, duplicates) = unsafe { cursor.walk_n_into(3, &mut storage) };
+    let views = unsafe { cursor.walk_n_into(3, &mut storage) };
     assert_eq!(views[0].address().to_bytes(), [0x41; 32]);
     assert_eq!(views[1].address().to_bytes(), [0x41; 32]);
     assert_eq!(views[2].address().to_bytes(), [0x41; 32]);
-    let duplicates = duplicates.expect("duplicate tracking should be materialized");
-    assert!(duplicates.get(0));
-    assert!(duplicates.get(1));
-    assert!(duplicates.get(2));
 }
 
 // -- Non-zero data_len paths -----------------------------------------
