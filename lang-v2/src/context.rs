@@ -154,16 +154,8 @@ impl<'a, T: Bumps> Context<'a, T> {
                 let range = (start, self.remaining_num);
                 self.remaining_accounts = Some(range);
                 range
->>>>>>> 2490c5a (refactor(lang-v2): make remaining accounts lazy)
             }
         };
-<<<<<<< HEAD
-        let start = self.cursor.consumed();
-        for _ in 0..remaining {
-            // SAFETY: cursor is positioned at the start of the remaining
-            // region and `remaining` is the exact number of accounts to walk.
-            unsafe { self.cursor.next() };
-=======
         RemainingAccounts {
             input_start: self.cursor.input_start(),
             start,

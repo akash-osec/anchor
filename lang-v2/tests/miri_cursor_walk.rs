@@ -19,22 +19,18 @@
 //! strict-provenance `.addr()` + `.add(delta)` rather than an
 //! int-to-ptr mask, so the derivation chain survives Miri's check.
 
-use anchor_lang::testing::{AccountRecord, SbfInputBuffer};
+use anchor_lang::{
+    cursor::AccountCursor,
+    testing::{AccountRecord, SbfInputBuffer},
+};
 
-use anchor_lang::cursor::AccountCursor;
-use core::mem::MaybeUninit;
-use pinocchio::account::AccountView;
-
-// Helper: run the closure with a freshly-initialized cursor + lookup array.
-// Using a 256-slot lookup matches the framework's real dispatcher frame.
+// Run a closure with the same compact cursor generated entrypoints use.
 fn with_cursor<F, R>(input: &mut SbfInputBuffer, f: F) -> R
 where
-    F: FnOnce(&mut AccountCursor, *mut AccountView) -> R,
+    F: FnOnce(&mut AccountCursor) -> R,
 {
-    let mut lookup: [MaybeUninit<AccountView>; 256] = [const { MaybeUninit::uninit() }; 256];
-    let lookup_ptr = lookup.as_mut_ptr() as *mut AccountView;
-    let mut cursor = unsafe { AccountCursor::new(input.as_mut_ptr(), lookup_ptr) };
-    f(&mut cursor, lookup_ptr)
+    let mut cursor = unsafe { AccountCursor::new(input.as_mut_ptr()) };
+    f(&mut cursor)
 }
 
 // -- Baseline: three non-dup accounts walk correctly ------------------
@@ -71,7 +67,7 @@ fn all_non_dup_walk() {
         },
     ]);
 
-    with_cursor(&mut input, |cursor, _lookup| {
+    with_cursor(&mut input, |cursor| {
         let v0 = unsafe { cursor.next() };
         let v1 = unsafe { cursor.next() };
         let v2 = unsafe { cursor.next() };
@@ -117,7 +113,7 @@ fn dup_resolves_to_earlier_view() {
         },
     ]);
 
-    with_cursor(&mut input, |cursor, _| {
+    with_cursor(&mut input, |cursor| {
         let v0 = unsafe { cursor.next() };
         let v1 = unsafe { cursor.next() };
         let v2 = unsafe { cursor.next() };
@@ -158,7 +154,7 @@ fn chained_dup_resolves_transitively() {
         AccountRecord::Dup { index: 1 }, // dups index 1 (which was already dup of 0)
     ]);
 
-    with_cursor(&mut input, |cursor, _| {
+    with_cursor(&mut input, |cursor| {
         let v0 = unsafe { cursor.next() };
         let v1 = unsafe { cursor.next() };
         let v2 = unsafe { cursor.next() };
@@ -171,51 +167,82 @@ fn chained_dup_resolves_transitively() {
     });
 }
 
-// -- Lookup cache: `lookup[i]` is populated by the i-th next() call --
-//
-// This is the framework's claim at `cursor.rs:44-45`:
-// "Indexed by `consumed` on write and by the serialized dup index
-//  on read". Verify by inspecting lookup array after walks.
-
 #[test]
-fn lookup_array_populated_by_consumed_index() {
+fn non_consecutive_duplicate_resolves_to_the_original_account() {
     let mut input = SbfInputBuffer::build(&[
         AccountRecord::NonDup {
-            address: [0x01; 32],
+            address: [0x41; 32],
             owner: [0; 32],
-            lamports: 10,
+            lamports: 41,
             is_signer: false,
             is_writable: true,
             executable: false,
             data_len: 0,
         },
         AccountRecord::NonDup {
-            address: [0x02; 32],
+            address: [0x42; 32],
             owner: [0; 32],
-            lamports: 20,
+            lamports: 42,
             is_signer: false,
             is_writable: true,
             executable: false,
             data_len: 0,
         },
+        AccountRecord::NonDup {
+            address: [0x43; 32],
+            owner: [0; 32],
+            lamports: 43,
+            is_signer: false,
+            is_writable: true,
+            executable: false,
+            data_len: 0,
+        },
+        AccountRecord::Dup { index: 0 },
     ]);
 
-    with_cursor(&mut input, |cursor, lookup| {
-        let _ = unsafe { cursor.next() };
-        let _ = unsafe { cursor.next() };
+    with_cursor(&mut input, |cursor| {
+        let original = unsafe { cursor.next() };
+        let _middle_a = unsafe { cursor.next() };
+        let _middle_b = unsafe { cursor.next() };
+        let duplicate = unsafe { cursor.next() };
 
-        // After two walks, lookup[0] and lookup[1] are populated.
-        let slot0 = unsafe { *lookup.add(0) };
-        let slot1 = unsafe { *lookup.add(1) };
-        assert_eq!(slot0.address().to_bytes(), [0x01; 32]);
-        assert_eq!(slot1.address().to_bytes(), [0x02; 32]);
+        assert_eq!(duplicate.address(), original.address());
+        assert_eq!(duplicate.lamports(), 41);
     });
 }
 
-// -- walk_n convenience ----------------------------------------------
+#[test]
+fn highest_representable_prior_index_resolves_without_a_lookup_table() {
+    let mut records = Vec::with_capacity(256);
+    records.push(AccountRecord::NonDup {
+        address: [0x55; 32],
+        owner: [0; 32],
+        lamports: 55,
+        is_signer: false,
+        is_writable: true,
+        executable: false,
+        data_len: 0,
+    });
+    for index in 0..=254u8 {
+        records.push(AccountRecord::Dup { index });
+    }
+
+    let mut input = SbfInputBuffer::build(&records);
+    with_cursor(&mut input, |cursor| {
+        let first = unsafe { cursor.next() };
+        let mut last = first;
+        for _ in 1..records.len() {
+            last = unsafe { cursor.next() };
+        }
+
+        assert_eq!(last.address(), first.address());
+        assert_eq!(last.lamports(), 55);
+        assert_eq!(cursor.consumed(), 256);
+    });
+}
 
 #[test]
-fn walk_n_returns_slice_of_views() {
+fn sequential_walk_preserves_record_order() {
     let mut input = SbfInputBuffer::build(&[
         AccountRecord::NonDup {
             address: [0xAA; 32],
@@ -246,8 +273,8 @@ fn walk_n_returns_slice_of_views() {
         },
     ]);
 
-    with_cursor(&mut input, |cursor, _| {
-        let views = unsafe { cursor.walk_n(3) };
+    with_cursor(&mut input, |cursor| {
+        let views = core::array::from_fn::<_, 3, _>(|_| unsafe { cursor.next() });
         assert_eq!(views.len(), 3);
         assert_eq!(views[0].address().to_bytes(), [0xAA; 32]);
         assert_eq!(views[1].address().to_bytes(), [0xBB; 32]);
@@ -294,7 +321,7 @@ fn non_dup_with_varied_data_len_advances_correctly() {
         },
     ]);
 
-    with_cursor(&mut input, |cursor, _| {
+    with_cursor(&mut input, |cursor| {
         let v0 = unsafe { cursor.next() };
         let v1 = unsafe { cursor.next() };
         let v2 = unsafe { cursor.next() };
@@ -330,12 +357,12 @@ fn first_account_short_circuit_overrides_wrong_borrow_state_byte() {
     }]);
 
     // Corrupt the borrow_state byte at the first record's offset — if
-    // the short-circuit didn't fire, the cursor would try to read
-    // lookup[0] which is still uninitialized → UB under Miri.
+    // the short-circuit didn't fire, the cursor would interpret the
+    // record as a self-reference instead of an account header.
     let offset = input.record_offsets[0];
     input.bytes_mut()[offset] = 0; // simulate "dup of index 0"
 
-    with_cursor(&mut input, |cursor, _| {
+    with_cursor(&mut input, |cursor| {
         // Should NOT UB — the `consumed == 0` short-circuit takes the
         // non-dup path regardless of the byte value.
         let v = unsafe { cursor.next() };
