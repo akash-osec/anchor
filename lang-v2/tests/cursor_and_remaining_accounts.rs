@@ -22,7 +22,7 @@ use {
         testing::{AccountRecord, SbfInputBuffer},
         AccountViewCompat, Bumps, Context,
     },
-    pinocchio::account::AccountView,
+    pinocchio::{account::AccountView, Resize},
     solana_address::Address,
 };
 
@@ -214,8 +214,14 @@ fn remaining_accounts_resolves_declared_and_trailing_duplicate_chains() {
             unique_addr(0),
         ]
     );
-    assert_eq!(remaining.get(2).unwrap().address().to_bytes(), unique_addr(1));
-    assert_eq!(remaining.get(3).unwrap().address().to_bytes(), unique_addr(0));
+    assert_eq!(
+        remaining.get(2).unwrap().address().to_bytes(),
+        unique_addr(1)
+    );
+    assert_eq!(
+        remaining.get(3).unwrap().address().to_bytes(),
+        unique_addr(0)
+    );
 }
 
 #[test]
@@ -300,4 +306,55 @@ fn remaining_accounts_reuses_range_and_does_not_re_walk_cursor() {
     // directly; drop `ctx` first to release the borrow.
     drop(ctx);
     assert_eq!(cursor.consumed(), consumed_before + 2);
+}
+
+#[test]
+fn remaining_accounts_rescan_uses_original_boundaries_after_account_growth() {
+    let program_id = Address::new_from_array([0x42; 32]);
+    let records = [
+        non_dup_with_data(0, 8),
+        non_dup(1),
+        AccountRecord::Dup { index: 0 },
+        non_dup(2),
+    ];
+    let mut sbf = SbfInputBuffer::build(&records);
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
+    let mut declared = unsafe { cursor.next() };
+    declared.resize(17).unwrap();
+
+    let mut ctx: Context<'_, DummyHeader> =
+        Context::new(&program_id, DummyHeader, (), &mut cursor, 3);
+    let remaining = ctx.remaining_accounts();
+
+    assert_eq!(
+        remaining.get(0).unwrap().address().to_bytes(),
+        unique_addr(1)
+    );
+    assert_eq!(
+        remaining.get(1).unwrap().address().to_bytes(),
+        unique_addr(0)
+    );
+    assert_eq!(
+        remaining.get(2).unwrap().address().to_bytes(),
+        unique_addr(2)
+    );
+}
+
+#[test]
+fn remaining_accounts_rescan_uses_original_boundaries_after_account_shrink() {
+    let program_id = Address::new_from_array([0x42; 32]);
+    let mut sbf = SbfInputBuffer::build(&[non_dup_with_data(0, 17), non_dup(1), non_dup(2)]);
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
+    let mut declared = unsafe { cursor.next() };
+    declared.resize(3).unwrap();
+
+    let mut ctx: Context<'_, DummyHeader> =
+        Context::new(&program_id, DummyHeader, (), &mut cursor, 2);
+    let addresses: Vec<_> = ctx
+        .remaining_accounts()
+        .iter()
+        .map(|account| account.address().to_bytes())
+        .collect();
+
+    assert_eq!(addresses, vec![unique_addr(1), unique_addr(2)]);
 }
