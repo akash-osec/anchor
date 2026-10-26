@@ -212,8 +212,8 @@ fn non_consecutive_duplicate_resolves_to_the_original_account() {
 }
 
 #[test]
-fn highest_representable_prior_index_resolves_without_a_lookup_table() {
-    let mut records = Vec::with_capacity(256);
+fn highest_valid_prior_index_resolves_without_a_lookup_table() {
+    let mut records = Vec::with_capacity(pinocchio::MAX_TX_ACCOUNTS);
     records.push(AccountRecord::NonDup {
         address: [0x55; 32],
         owner: [0; 32],
@@ -223,7 +223,10 @@ fn highest_representable_prior_index_resolves_without_a_lookup_table() {
         executable: false,
         data_len: 0,
     });
-    for index in 0..=254u8 {
+    // A transaction contains at most 255 account records (indices 0..=254).
+    // The final record can therefore point no later than prior index 253;
+    // marker 255 is reserved for a non-duplicate record.
+    for index in 0..=253u8 {
         records.push(AccountRecord::Dup { index });
     }
 
@@ -237,7 +240,7 @@ fn highest_representable_prior_index_resolves_without_a_lookup_table() {
 
         assert_eq!(last.address(), first.address());
         assert_eq!(last.lamports(), 55);
-        assert_eq!(cursor.consumed(), 256);
+        assert_eq!(cursor.consumed(), pinocchio::MAX_TX_ACCOUNTS);
     });
 }
 
