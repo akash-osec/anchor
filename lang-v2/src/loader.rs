@@ -7,7 +7,7 @@ use {
 /// Sequential account loader for `#[derive(Accounts)]`.
 ///
 /// Thin wrapper around an [`AccountCursor`]. The dispatcher bulk-walks the
-/// declared account region with [`Self::walk_n`], and specialized init paths
+/// declared account region with caller-owned storage, and specialized init paths
 /// can still walk individual accounts through `next_view` / `load_next` /
 /// `next_mut`.
 ///
@@ -24,19 +24,18 @@ impl<'a> AccountLoader<'a> {
     }
 
     #[inline(always)]
-    pub fn consumed(&self) -> u8 {
+    pub fn consumed(&self) -> usize {
         self.cursor.consumed()
     }
 
-    /// Walk N accounts in bulk, returning a slice of raw `AccountView`s.
-    /// Cursor math runs in a tight loop before any validation happens.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure N does not exceed the remaining accounts.
+    /// Fill caller-provided account-view storage. Generated dispatch sizes the
+    /// storage to the current instruction's declared account header.
     #[inline(always)]
-    pub fn walk_n(&mut self, n: usize) -> &[AccountView] {
-        unsafe { self.cursor.walk_n(n) }
+    pub(crate) unsafe fn walk_into<'views>(
+        &mut self,
+        output: &'views mut [core::mem::MaybeUninit<AccountView>],
+    ) -> &'views [AccountView] {
+        self.cursor.walk_into(output)
     }
 
     /// Walk one account from the cursor and return the raw `AccountView`.
