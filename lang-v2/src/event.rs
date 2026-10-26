@@ -41,6 +41,30 @@ pub trait Event: Discriminator {
             .map_err(|_| solana_program_error::ProgramError::InvalidInstructionData)
     }
 
+    /// Runtime hook used by `emit!`. Generated event implementations override
+    /// this method with storage sized for the concrete event shape.
+    #[doc(hidden)]
+    fn __emit(&self) -> Result<(), solana_program_error::ProgramError> {
+        let data = self.try_data()?;
+        sol_log_data(&[data.as_slice()]);
+        Ok(())
+    }
+
+    /// Runtime hook used by `emit_cpi!`. The callback keeps concrete event
+    /// storage inside the generated implementation instead of exposing a new
+    /// public buffer type.
+    #[doc(hidden)]
+    fn __with_cpi_data<R>(
+        &self,
+        callback: impl FnOnce(&[u8]) -> Result<R, solana_program_error::ProgramError>,
+    ) -> Result<R, solana_program_error::ProgramError> {
+        let mut data = InstructionDataBuffer::new();
+        data.try_extend_from_slice(EVENT_IX_TAG_LE)
+            .map_err(|_| solana_program_error::ProgramError::InvalidInstructionData)?;
+        self.try_data_into(&mut data)?;
+        callback(data.as_slice())
+    }
+
     /// Fallible event serialization for allocator-free runtime paths.
     /// On-chain implementations must provide this method directly. Host
     /// implementations retain the infallible `data()` compatibility method.
