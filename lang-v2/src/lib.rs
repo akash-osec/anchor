@@ -153,15 +153,6 @@ pub use {
     wincode,
 };
 
-#[inline]
-pub(crate) fn try_extend_instruction_data(
-    data: &mut InstructionDataBuffer,
-    bytes: &[u8],
-) -> Result<()> {
-    data.try_extend_from_slice(bytes)
-        .map_err(|_| solana_program_error::ProgramError::InvalidInstructionData)
-}
-
 #[doc(hidden)]
 #[cfg(not(feature = "alloc"))]
 #[macro_export]
