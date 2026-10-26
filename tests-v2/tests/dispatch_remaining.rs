@@ -333,7 +333,7 @@ fn repeated_remaining_calls_return_cached_accounts() {
 }
 
 #[test]
-fn valid_instruction_with_no_remaining_returns_empty_vec() {
+fn valid_instruction_with_no_remaining_returns_empty_view() {
     let (mut svm, payer) = setup();
     let counter = initialize(&mut svm, &payer);
     let data = dispatch_remaining::instruction::ReadRemainingOnce { expected_count: 0 }.data();

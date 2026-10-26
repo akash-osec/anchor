@@ -18,7 +18,7 @@ pub mod multisig_v2 {
     #[inline(always)]
     pub fn create(ctx: &mut Context<Create>, threshold: u8) -> Result<()> {
         let remaining = ctx.remaining_accounts();
-        ctx.accounts.create_multisig(threshold, &remaining)?;
+        ctx.accounts.create_multisig(threshold, remaining.iter())?;
         ctx.accounts.config.bump = ctx.bumps.config;
         Ok(())
     }
@@ -39,6 +39,7 @@ pub mod multisig_v2 {
     #[inline(always)]
     pub fn execute_transfer(ctx: &mut Context<ExecuteTransfer>, amount: u64) -> Result<()> {
         let remaining = ctx.remaining_accounts();
-        ctx.accounts.verify_and_transfer(amount, ctx.bumps.vault, &remaining)
+        ctx.accounts
+            .verify_and_transfer(amount, ctx.bumps.vault, remaining.iter())
     }
 }
