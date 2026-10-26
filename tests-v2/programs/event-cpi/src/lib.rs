@@ -15,6 +15,16 @@ pub struct EventCpiObserved {
     pub marker: u8,
 }
 
+#[event]
+pub struct LargeEventCpiObserved {
+    pub payload: [u8; 300],
+}
+
+#[event]
+pub struct OversizedEventCpiObserved {
+    pub payload: [u8; 1232],
+}
+
 #[program]
 pub mod event_cpi_test {
     use super::*;
@@ -29,6 +39,20 @@ pub mod event_cpi_test {
     pub fn emit_once(ctx: &mut Context<EmitOnce>, value: u64) -> Result<()> {
         ctx.accounts.counter.value = value;
         emit_cpi!(EventCpiObserved { value, marker: 7 });
+        Ok(())
+    }
+
+    #[discrim = 2]
+    pub fn emit_large(ctx: &mut Context<EmitOnce>) -> Result<()> {
+        ctx.accounts.counter.value = 300;
+        emit_cpi!(LargeEventCpiObserved { payload: [7; 300] });
+        Ok(())
+    }
+
+    #[discrim = 3]
+    pub fn emit_oversized(ctx: &mut Context<EmitOnce>) -> Result<()> {
+        ctx.accounts.counter.value = 1232;
+        emit_cpi!(OversizedEventCpiObserved { payload: [7; 1232] });
         Ok(())
     }
 

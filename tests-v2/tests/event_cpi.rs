@@ -96,6 +96,54 @@ fn emit_cpi_from_handler_succeeds() {
 }
 
 #[test]
+fn emit_cpi_accepts_events_larger_than_the_removed_264_byte_limit() {
+    let (mut svm, payer) = setup();
+    let counter = initialize(&mut svm, &payer);
+    let event_authority = event_authority_pda();
+    let data = event_cpi_test::instruction::EmitLarge {}.data();
+
+    send_instruction(
+        &mut svm,
+        program_id(),
+        data,
+        vec![
+            AccountMeta::new(counter, false),
+            AccountMeta::new_readonly(event_authority, false),
+            AccountMeta::new_readonly(program_id(), false),
+        ],
+        &payer,
+        &[],
+    )
+    .expect("a protocol-valid event larger than 264 bytes should be emitted");
+
+    assert_eq!(counter_value(&svm, counter), 300);
+}
+
+#[test]
+fn emit_cpi_rejects_events_larger_than_the_protocol_limit() {
+    let (mut svm, payer) = setup();
+    let counter = initialize(&mut svm, &payer);
+    let event_authority = event_authority_pda();
+    let data = event_cpi_test::instruction::EmitOversized {}.data();
+
+    let result = send_instruction(
+        &mut svm,
+        program_id(),
+        data,
+        vec![
+            AccountMeta::new(counter, false),
+            AccountMeta::new_readonly(event_authority, false),
+            AccountMeta::new_readonly(program_id(), false),
+        ],
+        &payer,
+        &[],
+    );
+
+    assert_error_contains(result, "InvalidInstructionData");
+    assert_eq!(counter_value(&svm, counter), 0);
+}
+
+#[test]
 fn emit_cpi_handler_rejects_wrong_event_authority_account() {
     let (mut svm, payer) = setup();
     let counter = initialize(&mut svm, &payer);
