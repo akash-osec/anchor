@@ -23,12 +23,15 @@ pub struct ExecuteTransfer {
 
 impl ExecuteTransfer {
     #[inline(always)]
-    pub fn verify_and_transfer(
+    pub fn verify_and_transfer<I>(
         &self,
         amount: u64,
         vault_bump: u8,
-        remaining: &[AccountView],
-    ) -> Result<()> {
+        remaining: I,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = AccountView>,
+    {
         let stored_signers = self.config.active_signers();
         let threshold = self.config.threshold;
 

@@ -390,7 +390,7 @@ fn signers<'seeds, const N: usize>(
 }
 
 pub(crate) fn cpi_accounts<'a, const N: usize>(
-    account_handles: &[CpiHandle<'a>],
+    account_handles: &'a [CpiHandle<'_>],
 ) -> Result<crate::CpiAccountBuffer<'a, N>, ProgramError> {
     let mut accounts = crate::CpiAccountBuffer::new();
     for handle in account_handles {

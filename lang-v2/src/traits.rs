@@ -2,7 +2,7 @@
 use pinocchio::account::{Ref, RefMut};
 use {
     crate::require,
-    core::ops::Deref,
+    core::{marker::PhantomData, ops::Deref},
     pinocchio::{
         account::{AccountView, NOT_BORROWED},
         address::Address,
@@ -22,7 +22,8 @@ use {
 /// prevent accidental use with pinocchio's checked invoke builders.
 #[derive(Clone, Copy)]
 pub struct CpiHandle<'a> {
-    view: &'a AccountView,
+    view: AccountView,
+    lifetime: PhantomData<&'a AccountView>,
     writable: bool,
     /// CPI meta signer bit. Defaults to the transaction view; set via
     /// [`CpiHandle::as_signer`] for PDA remaining accounts.
@@ -65,7 +66,8 @@ impl<'a> CpiHandle<'a> {
         relax_readonly_borrow: bool,
     ) -> Self {
         Self {
-            view,
+            view: *view,
+            lifetime: PhantomData,
             writable: false,
             signer: view.is_signer(),
             borrow_check,
@@ -81,10 +83,24 @@ impl<'a> CpiHandle<'a> {
     #[inline(always)]
     pub(crate) fn writable_with_borrow_check(view: &'a AccountView, borrow_check: bool) -> Self {
         Self {
-            view,
+            view: *view,
+            lifetime: PhantomData,
             writable: true,
             signer: view.is_signer(),
             borrow_check,
+            relax_readonly_borrow: false,
+        }
+    }
+
+    /// The account memory backing `view` must remain valid for `'a`.
+    #[inline(always)]
+    pub(crate) unsafe fn from_remaining_account(view: AccountView) -> Self {
+        Self {
+            writable: view.is_writable(),
+            signer: view.is_signer(),
+            view,
+            lifetime: PhantomData,
+            borrow_check: true,
             relax_readonly_borrow: false,
         }
     }
@@ -96,7 +112,9 @@ impl<'a> CpiHandle<'a> {
     /// the borrow of `&self`.
     #[inline(always)]
     pub fn address(&self) -> &'a Address {
-        self.view.address()
+        // SAFETY: Construction ties the runtime record to 'a. The address in
+        // that record is immutable for the duration of the instruction.
+        unsafe { &(*self.view.account_ptr()).address }
     }
 
     /// Whether this handle was obtained via `cpi_handle_mut`.
@@ -135,10 +153,10 @@ impl<'a> CpiHandle<'a> {
     /// `CpiHandleMut` field can emit a second readonly meta/handle pair.
     #[inline(always)]
     pub fn into_readonly(self) -> CpiHandle<'a> {
-        let mut handle =
-            Self::readonly_with_flags(self.view, self.borrow_check, self.relax_readonly_borrow);
-        handle.signer = self.signer;
-        handle
+        Self {
+            writable: false,
+            ..self
+        }
     }
 
     /// Access the underlying `AccountView` for CPI account construction.
@@ -146,8 +164,8 @@ impl<'a> CpiHandle<'a> {
     /// Restricted to the crate so external code cannot extract the view
     /// and pass it to pinocchio's checked invoke.
     #[inline(always)]
-    pub(crate) fn account_view(&self) -> &'a AccountView {
-        self.view
+    pub(crate) fn account_view(&self) -> &AccountView {
+        &self.view
     }
 
     #[inline(always)]
@@ -243,7 +261,8 @@ impl<'a> From<CpiHandleMut<'a>> for CpiHandle<'a> {
     #[inline(always)]
     fn from(handle: CpiHandleMut<'a>) -> Self {
         Self {
-            view: handle.view,
+            view: *handle.view,
+            lifetime: PhantomData,
             writable: true,
             signer: handle.signer,
             borrow_check: handle.borrow_check,

@@ -21,20 +21,24 @@ pub struct Create {
 
 impl Create {
     #[inline(always)]
-    pub fn create_multisig(
+    pub fn create_multisig<I>(
         &mut self,
         threshold: u8,
-        remaining: &[AccountView],
-    ) -> Result<()> {
-        if remaining.len() > MAX_SIGNERS {
+        remaining: I,
+    ) -> Result<()>
+    where
+        I: ExactSizeIterator<Item = AccountView>,
+    {
+        let remaining_len = remaining.len();
+        if remaining_len > MAX_SIGNERS {
             return Err(MultisigError::TooManySigners.into());
         }
-        if threshold == 0 || threshold as usize > remaining.len() {
+        if threshold == 0 || threshold as usize > remaining_len {
             return Err(MultisigError::InvalidThreshold.into());
         }
 
         let mut signers_tmp = [Address::new_from_array([0u8; 32]); MAX_SIGNERS];
-        for (i, account) in remaining.iter().enumerate() {
+        for (i, account) in remaining.enumerate() {
             if !account.is_signer() {
                 return Err(MultisigError::MissingRequiredSignature.into());
             }
@@ -46,7 +50,7 @@ impl Create {
         self.config.bump = 0; // caller writes the bump after init
         self.config
             .signers
-            .set_from_slice(&signers_tmp[..remaining.len()]);
+            .set_from_slice(&signers_tmp[..remaining_len]);
         self.config.label.clear();
 
         Ok(())
