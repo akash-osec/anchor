@@ -81,16 +81,19 @@ impl AccountCursor {
         core::slice::from_raw_parts(output.as_ptr().cast::<AccountView>(), output.len())
     }
 
-    /// Return the record immediately after `account`.
+    /// Return the record immediately after a consumed `account`.
     #[inline(always)]
     pub(crate) unsafe fn next_record(account: *mut RuntimeAccount) -> *mut u8 {
         let mut ptr = (account as *mut u8).add(core::mem::size_of::<u64>());
-        let padding = u32::from_le_bytes((*account).padding);
-        if padding & DUPLICATE_METADATA_MASK != 0 {
+        let metadata = u32::from_le_bytes((*account).padding);
+        if metadata & DUPLICATE_METADATA_MASK != 0 {
             return ptr;
         }
 
-        ptr = ptr.add(STATIC_ACCOUNT_DATA + (*account).data_len as usize);
+        // `data_len` is live account state and may change after `resize`.
+        // Record boundaries are fixed by the original serialized length,
+        // which `next` preserves in the otherwise-unused padding bytes.
+        ptr = ptr.add(STATIC_ACCOUNT_DATA + metadata as usize);
         let addr = ptr.addr();
         let aligned = (addr + (BPF_ALIGN_OF_U128 - 1)) & !(BPF_ALIGN_OF_U128 - 1);
         ptr.add(aligned - addr)
