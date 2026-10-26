@@ -5415,11 +5415,16 @@ fn process_handler(
                 #[inline(always)]
                 fn __anchor_assert_no_ix_args(_: ()) {}
 
+                let mut __account_views = [
+                    const { ::core::mem::MaybeUninit::<anchor_lang::AccountView>::uninit() };
+                    <#accounts_path as anchor_lang::TryAccounts>::HEADER_SIZE
+                ];
                 match anchor_lang::run_handler::<#accounts_path, #return_ty>(
                     __program_id,
                     __cursor,
                     __ix_data,
                     __num_accounts,
+                    &mut __account_views,
                     |__ctx, __ix_args| {
                         __anchor_assert_no_ix_args(__ix_args);
                         #mod_name::#fn_name(__ctx)
@@ -5462,11 +5467,16 @@ fn process_handler(
                     }
                 }
 
+                let mut __account_views = [
+                    const { ::core::mem::MaybeUninit::<anchor_lang::AccountView>::uninit() };
+                    <#accounts_path as anchor_lang::TryAccounts>::HEADER_SIZE
+                ];
                 match anchor_lang::run_handler::<#accounts_path, #return_ty>(
                     __program_id,
                     __cursor,
                     __ix_data,
                     __num_accounts,
+                    &mut __account_views,
                     |__ctx, __ix_args| {
                         let (#(#extra_arg_names,)*) =
                             <_ as __AnchorIxArgCoerce<'a>>::__coerce(__ix_args, __ix_data)?;
@@ -5907,7 +5917,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
                         anchor_lang::ErrorCode::AccountNotEnoughKeys,
                     ).into();
                 }
-                let mut __cursor = anchor_lang::AccountCursor::new(__input, __lookup);
+                let mut __cursor = anchor_lang::AccountCursor::new(__input);
                 let __event_authority = __cursor.next();
                 if !__event_authority.is_signer() {
                     return anchor_lang::Error::from(
@@ -6048,10 +6058,6 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         anchor_lang::pinocchio::default_panic_handler!();
 
         /// Matches Solana's transaction-wide account cap (u8 index space).
-        /// The lookup array holds `[AccountView; 256]` = ~2 KiB of frame
-        /// used for duplicate-account resolution during cursor walks.
-        const __ANCHOR_MAX_ACCOUNTS: usize = 256;
-
         /// Core dispatch: program-id check, discriminator parse, account
         /// cursor setup, handler dispatch. Exported as the `entrypoint`
         /// symbol unless `no-entrypoint` is active. Custom entrypoints
@@ -6073,36 +6079,36 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         // can either (a) call this from Rust via its module path, or
         // (b) tail-call it from asm via the unmangled linker symbol.
         //
-        // Both exports are gated on `target_os = "solana"`: the symbol names
-        // only matter to the SBF linker, and un-mangling on host would cause
+        // Both exports are gated to Solana targets: the symbol names only
+        // matter to the SBF linker, and un-mangling on host would cause
         // duplicate-symbol errors whenever two `no-entrypoint` crates end up
         // in the same host-link (e.g. `cargo test` pulling in multiple `cpi`
         // deps).
         #[cfg_attr(
-            all(target_os = "solana", not(feature = "no-entrypoint")),
+            all(
+                any(target_os = "solana", target_arch = "bpf"),
+                not(feature = "no-entrypoint")
+            ),
             export_name = "entrypoint"
         )]
-        #[cfg_attr(all(target_os = "solana", feature = "no-entrypoint"), no_mangle)]
+        #[cfg_attr(
+            all(
+                any(target_os = "solana", target_arch = "bpf"),
+                feature = "no-entrypoint"
+            ),
+            no_mangle
+        )]
         pub unsafe extern "C" fn __anchor_dispatch(
             __input: *mut u8,
             __ix_data_ptr: *const u8,
         ) -> u64 {
-            let mut __lookup: [::core::mem::MaybeUninit<anchor_lang::AccountView>;
-                __ANCHOR_MAX_ACCOUNTS] =
-                [const { ::core::mem::MaybeUninit::uninit() }; __ANCHOR_MAX_ACCOUNTS];
-
-            __anchor_dispatch_internal(
-                __input,
-                __ix_data_ptr,
-                __lookup.as_mut_ptr() as *mut anchor_lang::AccountView,
-            )
+            __anchor_dispatch_internal(__input, __ix_data_ptr)
         }
 
         #[inline(never)]
         unsafe fn __anchor_dispatch_internal(
             __input: *mut u8,
             __ix_data_ptr: *const u8,
-            __lookup: *mut anchor_lang::AccountView,
         ) -> u64 {
             let __ix_data_len = *(__ix_data_ptr.sub(8) as *const u64) as usize;
             let __program_id: &anchor_lang::Address =
@@ -6115,7 +6121,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
             let __num = *(__input as *const u64) as usize;
             #event_cpi_dispatch
 
-            let mut __cursor = anchor_lang::AccountCursor::new(__input, __lookup);
+            let mut __cursor = anchor_lang::AccountCursor::new(__input);
 
             #(#dispatch_arms)*
             anchor_lang::Error::from(

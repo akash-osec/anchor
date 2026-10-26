@@ -1,175 +1,166 @@
 //! Lazy cursor over the serialized instruction input buffer.
 //!
-//! [`AccountCursor`] yields `AccountView`s on demand so dispatch can
-//! happen first and each arm walks only its declared accounts. A
-//! caller-provided `lookup` array resolves duplicate account references:
-//! when the BPF loader writes a dup index into `borrow_state`, the cursor
-//! returns the earlier `AccountView` from `lookup[idx]`.
+//! [`AccountCursor`] walks account records on demand. Duplicate records are
+//! resolved by rescanning previously consumed records, which avoids reserving
+//! transaction-wide account-view storage in the entrypoint frame.
 
-use pinocchio::account::{AccountView, RuntimeAccount, MAX_PERMITTED_DATA_INCREASE};
+use {
+    core::mem::MaybeUninit,
+    pinocchio::account::{AccountView, RuntimeAccount, MAX_PERMITTED_DATA_INCREASE},
+};
 
 /// Sentinel value in the serialized `borrow_state` byte indicating a
-/// non-duplicated account. Any other value (0..=254) indicates a
-/// duplicate and holds the index of the earlier account it aliases.
+/// non-duplicated account. Any other value identifies an earlier account.
 pub const NON_DUP_MARKER: u8 = u8::MAX;
 
-/// Static (fixed) per-account size in the serialized input buffer: the
-/// `RuntimeAccount` header + the `MAX_PERMITTED_DATA_INCREASE` padding
-/// region that trails the account data.
 const STATIC_ACCOUNT_DATA: usize =
     core::mem::size_of::<RuntimeAccount>() + MAX_PERMITTED_DATA_INCREASE;
-
-/// 8-byte alignment required between account records on BPF.
 const BPF_ALIGN_OF_U128: usize = 8;
 
-/// Cursor into the serialized instruction input buffer.
-///
-/// Advances a raw pointer past one account record per [`next`](AccountCursor::next)
-/// call and uses a `lookup` array for dup resolution.
+/// Marker written into the unused padding of a consumed duplicate record.
+/// `AccountView` reuses `borrow_state` as its live borrow counter, so the
+/// original duplicate index must be retained elsewhere for later lazy walks.
+pub(crate) const DUPLICATE_METADATA_MASK: u32 = 0x8000_0000;
+
+/// Cursor into the runtime's serialized instruction account region.
 ///
 /// # Safety
 ///
-/// Created from the runtime's input pointer (r1). Must not outlive the
-/// entrypoint invocation. Callers must ensure:
-///
-/// - `lookup` points to `[AccountView; N]` where `N >= max(consumed + 1,
-///   max_dup_index + 1)`. In practice: a `[MaybeUninit<AccountView>; 256]`
-///   allocated once in the dispatcher frame.
-/// - `next()` is called fewer than `num_accounts` times.
+/// The cursor is constructed from the runtime-provided input pointer. It must
+/// not outlive that input, and callers must never walk more records than the
+/// serialized account count. Duplicate indices are trusted to reference an
+/// earlier record, as guaranteed by the runtime serializer.
 pub struct AccountCursor {
-    /// Current position in the input buffer. Advances on each `next()`.
     ptr: *mut u8,
-
-    /// Pointer to the caller's `[AccountView; N]` lookup array.
-    /// Indexed by `consumed` on write and by the serialized dup index
-    /// on read (for duplicate resolution).
-    lookup: *mut AccountView,
-
-    /// Number of accounts yielded so far. Used both as the write index
-    /// into `lookup` and as a runtime counter exposed to callers for
-    /// bookkeeping (e.g., remaining-accounts walks).
-    consumed: u8,
-
+    input_start: *mut u8,
+    consumed: usize,
 }
+
 impl AccountCursor {
-    /// Create a fresh cursor at the start of the serialized accounts
-    /// region. `input_ptr` must point at the 8-byte `num_accounts`
-    /// length prefix in the input buffer (i.e. the runtime-provided `r1`
-    /// value); the cursor advances past it internally.
+    /// Create a cursor at the first serialized account record.
+    ///
+    /// `input_ptr` points to the runtime's account-count prefix.
     ///
     /// # Safety
     ///
-    /// See type-level safety notes.
+    /// See the type-level safety contract.
+    #[doc(hidden)]
     #[inline(always)]
-    pub unsafe fn new(input_ptr: *mut u8, lookup: *mut AccountView) -> Self {
+    pub unsafe fn new(input_ptr: *mut u8) -> Self {
+        let input_start = input_ptr.add(core::mem::size_of::<u64>());
         Self {
-            ptr: input_ptr.add(core::mem::size_of::<u64>()),
-            lookup,
+            ptr: input_start,
+            input_start,
             consumed: 0,
         }
     }
 
-    /// Number of accounts yielded from this cursor so far.
     #[inline(always)]
-    pub fn consumed(&self) -> u8 {
+    pub fn consumed(&self) -> usize {
         self.consumed
     }
 
-    /// Returns views already written to the cursor's lookup table.
-    ///
-    /// The caller must only request entries that have already been yielded by
-    /// [`Self::next`]. This lets callers borrow the resolved accounts without
-    /// copying them into another fixed-capacity buffer.
     #[inline(always)]
-    ///
-    /// # Safety
-    ///
-    /// The returned lifetime must not outlive the lookup table supplied when
-    /// this cursor was created. The dispatcher guarantees that table remains
-    /// alive for the complete instruction.
-    pub(crate) unsafe fn views<'lookup>(&self, start: u8, len: u8) -> &'lookup [AccountView] {
-        // SAFETY: `start..start + len` was populated by previous `next` calls
-        // and the dispatcher-provided lookup table remains live for the
-        // duration of the instruction.
-        unsafe {
-            core::slice::from_raw_parts(self.lookup.add(start as usize), len as usize)
-        }
+    pub(crate) fn input_start(&self) -> *mut u8 {
+        self.input_start
     }
 
-    /// Walk N accounts in a tight loop, storing views in the lookup array.
-    /// Returns a slice of the walked views.
-    /// This avoids interleaving cursor math with validation logic, letting
-    /// LLVM optimize the walk loop.
+    /// Walk exactly `output.len()` accounts into caller-owned storage.
     ///
     /// # Safety
     ///
-    /// Caller must ensure N does not exceed the remaining accounts.
+    /// `output.len()` must not exceed the number of unconsumed records.
     #[inline(always)]
-    pub unsafe fn walk_n(&mut self, n: usize) -> &[AccountView] {
-        let start = self.consumed as usize;
-        for _ in 0..n {
-            self.next();
+    pub(crate) unsafe fn walk_into<'views>(
+        &mut self,
+        output: &'views mut [MaybeUninit<AccountView>],
+    ) -> &'views [AccountView] {
+        for slot in output.iter_mut() {
+            slot.write(self.next());
         }
-        core::slice::from_raw_parts(self.lookup.add(start), n)
+        core::slice::from_raw_parts(output.as_ptr().cast::<AccountView>(), output.len())
     }
 
-    /// Advance past one account record and return its `AccountView`.
+    /// Return the record immediately after `account`.
+    #[inline(always)]
+    pub(crate) unsafe fn next_record(account: *mut RuntimeAccount) -> *mut u8 {
+        let mut ptr = (account as *mut u8).add(core::mem::size_of::<u64>());
+        let padding = u32::from_le_bytes((*account).padding);
+        if padding & DUPLICATE_METADATA_MASK != 0 {
+            return ptr;
+        }
+
+        ptr = ptr.add(STATIC_ACCOUNT_DATA + (*account).data_len as usize);
+        let addr = ptr.addr();
+        let aligned = (addr + (BPF_ALIGN_OF_U128 - 1)) & !(BPF_ALIGN_OF_U128 - 1);
+        ptr.add(aligned - addr)
+    }
+
+    /// Locate a consumed record by serialized index.
+    #[inline(always)]
+    pub(crate) unsafe fn record_at(input_start: *mut u8, index: usize) -> *mut RuntimeAccount {
+        let mut ptr = input_start;
+        let mut current = 0usize;
+        while current < index {
+            ptr = Self::next_record(ptr.cast::<RuntimeAccount>());
+            current += 1;
+        }
+        ptr.cast::<RuntimeAccount>()
+    }
+
+    /// Resolve a consumed serialized slot to its original account.
     ///
-    /// Handles both non-duplicated accounts (walks past the record
-    /// header + data + padding) and duplicated accounts (reads the
-    /// earlier view from `lookup`).
-    ///
-    /// Also writes the resolved view back into `lookup[consumed]` so
-    /// future dup references resolve correctly, then increments
-    /// `consumed`.
+    /// The duplicate chain must be strictly decreasing. Returning `None` for
+    /// an invalid chain keeps lazy safe APIs from looping on malformed test
+    /// input; the runtime-provided input satisfies this invariant.
+    #[inline(always)]
+    pub(crate) unsafe fn resolve_at(input_start: *mut u8, index: usize) -> Option<AccountView> {
+        let mut target = index;
+        let mut remaining_steps = index + 1;
+        while remaining_steps != 0 {
+            let account = Self::record_at(input_start, target);
+            let padding = u32::from_le_bytes((*account).padding);
+            if padding & DUPLICATE_METADATA_MASK == 0 {
+                return Some(AccountView::new_unchecked(account));
+            }
+
+            let previous = (padding & !DUPLICATE_METADATA_MASK) as usize;
+            if previous >= target {
+                return None;
+            }
+            target = previous;
+            remaining_steps -= 1;
+        }
+        None
+    }
+
+    /// Advance past one serialized account record.
     ///
     /// # Safety
     ///
-    /// Must not be called if `consumed` has already reached the
-    /// transaction's total `num_accounts` — there's no trailing account
-    /// record at that point. The caller (the derive-generated
-    /// dispatcher or a user-level `remaining_accounts()` walk) is
-    /// responsible for checking this upfront.
+    /// The cursor must not already be at the end of the account region.
     #[inline(always)]
     pub unsafe fn next(&mut self) -> AccountView {
-        let account: *mut RuntimeAccount = self.ptr as *mut RuntimeAccount;
-
-        // Advance 8 bytes at the head of every slot: covers the
-        // rent_epoch trailer for non-dup slots, or the full
-        // (dup_marker + 7 bytes padding) body of dup slots. Pinocchio's
-        // `read_account` applies the same "out-of-order" advance — it's
-        // algebraically equivalent to adding the struct size + data +
-        // padding + alignment at the end.
-        self.ptr = self.ptr.add(core::mem::size_of::<u64>());
-
-        // First account (consumed == 0) can never be a duplicate —
-        // short-circuits the dup check for the first field.
+        let account = self.ptr.cast::<RuntimeAccount>();
         let borrow_state = (*account).borrow_state;
+
         let view = if self.consumed == 0 || borrow_state == NON_DUP_MARKER {
-            // Non-dup: write data_len into the padding slot so
-            // `AccountView::resize()` can enforce
-            // MAX_PERMITTED_DATA_INCREASE later without another syscall.
+            debug_assert!((*account).data_len < DUPLICATE_METADATA_MASK as u64);
             (*account).padding = u32::to_le_bytes((*account).data_len as u32);
-            let data_len = (*account).data_len as usize;
-            self.ptr = self.ptr.add(STATIC_ACCOUNT_DATA);
-            self.ptr = self.ptr.add(data_len);
-            // Align to the next 8-byte boundary. Use strict provenance APIs to
-            // allow this to be tested under Miri.
-            let addr = self.ptr.addr();
-            let aligned = (addr + (BPF_ALIGN_OF_U128 - 1)) & !(BPF_ALIGN_OF_U128 - 1);
-            self.ptr = self.ptr.add(aligned - addr);
             AccountView::new_unchecked(account)
         } else {
-            // Duplicate: look up the earlier slot. Safe because the
-            // runtime only emits dup indices that are strictly less
-            // than the current `consumed`, so the slot is already
-            // populated by a prior `next()` call.
-            *self.lookup.add(borrow_state as usize)
+            debug_assert!((borrow_state as usize) < self.consumed);
+            (*account).padding = u32::to_le_bytes(DUPLICATE_METADATA_MASK | borrow_state as u32);
+            match Self::resolve_at(self.input_start, borrow_state as usize) {
+                Some(view) => view,
+                // SAFETY: a non-decreasing or out-of-range duplicate index
+                // violates the runtime input contract documented above.
+                None => core::hint::unreachable_unchecked(),
+            }
         };
 
-        // Record this view so later dup references can resolve it.
-        *self.lookup.add(self.consumed as usize) = view;
-        self.consumed = self.consumed.wrapping_add(1);
+        self.ptr = Self::next_record(account);
+        self.consumed += 1;
         view
     }
 }
