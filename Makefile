@@ -1,5 +1,14 @@
 DICTIONARY_FILE ?= .cspell-anchor-dictionary.txt
 
+.PHONY: check-v2-no-alloc check-v2-no-alloc-graph check-v2-no-alloc-bpfel
+check-v2-no-alloc: check-v2-no-alloc-graph check-v2-no-alloc-bpfel
+
+check-v2-no-alloc-graph:
+	./.github/scripts/check-v2-no-alloc.sh
+
+check-v2-no-alloc-bpfel:
+	./.github/scripts/check-v2-no-alloc-bpfel.sh
+
 .PHONY: build-cli
 build-cli:
 	cargo build -p anchor-cli --release
@@ -193,6 +202,7 @@ coverage-v2-host-report:
 		echo "cargo-llvm-cov not installed. Run: cargo install cargo-llvm-cov"; \
 		exit 1; \
 	}
+	@mkdir -p $(COVERAGE_DIR)
 	cargo llvm-cov report \
 		--lcov \
 		--output-path $(COVERAGE_DIR)/host.lcov \
