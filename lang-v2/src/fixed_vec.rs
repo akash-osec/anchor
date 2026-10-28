@@ -129,7 +129,7 @@ impl<T, const N: usize> FixedVec<T, N> {
     where
         T: Copy,
     {
-        assert!(self.len + values.len() <= N, "fixed vector capacity exceeded");
+        assert!(values.len() <= N - self.len, "fixed vector capacity exceeded");
         for value in values {
             self.push(*value);
         }
