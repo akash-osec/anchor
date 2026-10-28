@@ -1,5 +1,3 @@
-extern crate alloc;
-
 use {
     crate::{address_eq, require, Address, CpiHandle, CpiInstruction},
     alloc::vec::Vec,

@@ -3,8 +3,6 @@
 //! Mirrors the v1 `anchor_lang::system_program` CPI utility surface while
 //! using v2 [`CpiContext`] and CPI handle accounts.
 
-extern crate alloc;
-
 use {
     crate::{
         require, CpiContext, CpiHandle, CpiHandleMut, Id, ToCpiAccounts,

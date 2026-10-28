@@ -1,7 +1,5 @@
 //! Allocator-neutral instruction views used by the public CPI API.
 
-extern crate alloc;
-
 use crate::Address;
 use pinocchio::instruction::InstructionAccount;
 
