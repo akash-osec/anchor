@@ -140,7 +140,7 @@ impl<T, const N: usize> FixedVec<T, N> {
     where
         T: Clone,
     {
-        if self.len + values.len() > N {
+        if values.len() > N - self.len {
             return Err(());
         }
         for value in values {
