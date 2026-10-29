@@ -20,9 +20,9 @@ use {
 };
 
 // SBF programs use the compiler bundled with platform-tools.
-const ANCHOR_MSRV: &str = "1.89.0";
+const ANCHOR_MSRV: &str = "1.95.0";
 // Host-side tests depend on Agave and LiteSVM, which require newer Rust.
-const HOST_RUST_VERSION: &str = "1.97.1";
+const HOST_RUST_VERSION: &str = "1.98.0";
 
 /// Program initialization template
 #[derive(Clone, Debug, Default, Eq, PartialEq, Parser, ValueEnum, AbsolutePath)]
@@ -243,7 +243,7 @@ fn workspace_manifest() -> String {
 members = [
     "programs/*"
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 edition = "2021"
@@ -276,6 +276,8 @@ fn cargo_toml(name: &str, test_template: Option<&TestTemplate>) -> String {
             r#"
 [dev-dependencies]
 mollusk-svm = "0.16"
+# Agave 4.4 requires Rust 1.98.1; keep the runtime on the supported cohort.
+solana-program-runtime = "~4.3.0"
 solana-account = "4.5.0"
 solana-pubkey = "4.3.0"
 solana-sdk-ids = "3.1.0"
@@ -811,7 +813,10 @@ impl TestTemplate {
                 }
             }
             Self::Rust | Self::Litesvm => "cargo test".to_owned(),
-            Self::Mollusk => "cargo test-sbf".to_owned(),
+            Self::Mollusk => format!(
+                "cargo test-sbf --tools-version {}",
+                crate::DEFAULT_TOOLS_VERSION
+            ),
         }
     }
 
@@ -1163,5 +1168,13 @@ mod tests {
         }
         let script = TestTemplate::Mocha.get_test_script(false, Some(&PackageManager::NPM));
         assert!(script.contains("mocha --import=tsx"));
+        let script = TestTemplate::Mollusk.get_test_script(false, None);
+        assert_eq!(
+            script,
+            format!(
+                "cargo test-sbf --tools-version {}",
+                crate::DEFAULT_TOOLS_VERSION
+            )
+        );
     }
 }
