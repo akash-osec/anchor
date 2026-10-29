@@ -4,13 +4,11 @@
 
 #![cfg_attr(any(target_os = "solana", target_arch = "bpf"), no_std)]
 
-#[cfg(feature = "alloc")]
 extern crate alloc;
 extern crate self as anchor_lang;
 
 /// Hidden compatibility re-export used by generated V2 host and IDL code.
 #[doc(hidden)]
-#[cfg(feature = "alloc")]
 pub extern crate alloc as __alloc;
 
 pub mod accounts;
