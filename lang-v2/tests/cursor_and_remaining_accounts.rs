@@ -9,12 +9,10 @@
 //!      align) so subsequent reads see the next record, not the tail
 //!      of the previous one.
 //!   2. Duplicate handling: a dup-record (borrow_state ∈ 0..=254)
-//!      yields the earlier `AccountView` from the lookup array — not
-//!      an `AccountView` pointing at the dup slot.
-//!   3. `Context::remaining_accounts` walks the cursor lazily on first
-//!      call, caches the resulting `Vec<AccountView>`, and returns a
-//!      fresh clone on each subsequent call without advancing the
-//!      cursor or double-populating the cache.
+//!      resolves to the earlier account without a transaction-wide lookup.
+//!   3. `Context::remaining_accounts` walks the cursor once on first call,
+//!      then resolves entries lazily from the serialized input without
+//!      allocating or advancing the cursor again.
 //!
 //! Run: `cargo test -p anchor-lang --features testing --test cursor_and_remaining_accounts`
 
@@ -24,8 +22,7 @@ use {
         testing::{AccountRecord, SbfInputBuffer},
         AccountViewCompat, Bumps, Context,
     },
-    core::mem::MaybeUninit,
-    pinocchio::account::AccountView,
+    pinocchio::{account::AccountView, Resize},
     solana_address::Address,
 };
 
@@ -66,18 +63,8 @@ fn non_dup_with_data(i: u8, data_len: usize) -> AccountRecord {
     }
 }
 
-/// Allocate an uninitialised `[AccountView; 256]` on the heap as the
-/// backing store for `AccountCursor`'s lookup table. Callers derive
-/// the `*mut AccountView` via `lookup.as_mut_ptr() as *mut _` and keep
-/// the `Vec` alive on the test's stack for the duration of the cursor
-/// — drop order (cursor before lookup) keeps the pointer valid
-/// without a `'static` hop, and avoids Miri leak-check hits.
-fn fresh_lookup() -> Vec<MaybeUninit<AccountView>> {
-    let mut v: Vec<MaybeUninit<AccountView>> = Vec::with_capacity(256);
-    for _ in 0..256 {
-        v.push(MaybeUninit::uninit());
-    }
-    v
+fn walk<const N: usize>(cursor: &mut AccountCursor) -> [AccountView; N] {
+    core::array::from_fn(|_| unsafe { cursor.next() })
 }
 
 // -- AccountCursor::next walks each record ---------------------------------
@@ -85,9 +72,7 @@ fn fresh_lookup() -> Vec<MaybeUninit<AccountView>> {
 #[test]
 fn cursor_next_advances_across_records() {
     let mut sbf = SbfInputBuffer::build(&[non_dup(0), non_dup(1), non_dup(2)]);
-    let mut lookup = fresh_lookup();
-    let mut cursor =
-        unsafe { AccountCursor::new(sbf.as_mut_ptr(), lookup.as_mut_ptr() as *mut AccountView) };
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
 
     assert_eq!(cursor.consumed(), 0);
     let v0 = unsafe { cursor.next() };
@@ -111,9 +96,7 @@ fn cursor_next_walks_past_variable_data_regions() {
         non_dup_with_data(2, 8),  // aligned → fixup adds 0 bytes
     ];
     let mut sbf = SbfInputBuffer::build(&records);
-    let mut lookup = fresh_lookup();
-    let mut cursor =
-        unsafe { AccountCursor::new(sbf.as_mut_ptr(), lookup.as_mut_ptr() as *mut AccountView) };
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
 
     for i in 0u8..3 {
         let view = unsafe { cursor.next() };
@@ -132,13 +115,11 @@ fn cursor_next_walks_past_variable_data_regions() {
 }
 
 #[test]
-fn cursor_walk_n_returns_all_views_at_once() {
+fn cursor_walks_all_views_in_order() {
     let mut sbf = SbfInputBuffer::build(&[non_dup(0), non_dup(1), non_dup(2), non_dup(3)]);
-    let mut lookup = fresh_lookup();
-    let mut cursor =
-        unsafe { AccountCursor::new(sbf.as_mut_ptr(), lookup.as_mut_ptr() as *mut AccountView) };
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
 
-    let views = unsafe { cursor.walk_n(4) };
+    let views = walk::<4>(&mut cursor);
     assert_eq!(views.len(), 4);
     for (i, v) in views.iter().enumerate() {
         assert_eq!(v.address().to_bytes(), unique_addr(i as u8));
@@ -151,21 +132,17 @@ fn cursor_walk_n_returns_all_views_at_once() {
 #[test]
 fn cursor_dup_resolves_to_earlier_view() {
     // Record 2 is a dup of record 0. The cursor must return the
-    // `AccountView` stored at `lookup[0]` (same address as record 0),
-    // not an AccountView pointing at the dup slot.
+    // The duplicate must resolve to record 0 rather than the compact dup slot.
     let records = [non_dup(0), non_dup(1), AccountRecord::Dup { index: 0 }];
     let mut sbf = SbfInputBuffer::build(&records);
-    let mut lookup = fresh_lookup();
-    let mut cursor =
-        unsafe { AccountCursor::new(sbf.as_mut_ptr(), lookup.as_mut_ptr() as *mut AccountView) };
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
 
-    let views = unsafe { cursor.walk_n(3) };
+    let views = walk::<3>(&mut cursor);
 
     assert_eq!(views[0].address().to_bytes(), unique_addr(0));
     assert_eq!(views[1].address().to_bytes(), unique_addr(1));
-    // Dup slot — resolved to lookup[0].
+    // Dup slot — resolved to the original record.
     assert_eq!(views[2].address().to_bytes(), unique_addr(0));
-
 }
 
 // -- Context::remaining_accounts ------------------------------------------
@@ -175,12 +152,10 @@ fn remaining_accounts_walks_trailing_region() {
     // Full transaction has 5 accounts: 2 declared, 3 trailing.
     let records = [non_dup(0), non_dup(1), non_dup(2), non_dup(3), non_dup(4)];
     let mut sbf = SbfInputBuffer::build(&records);
-    let mut lookup = fresh_lookup();
-    let mut cursor =
-        unsafe { AccountCursor::new(sbf.as_mut_ptr(), lookup.as_mut_ptr() as *mut AccountView) };
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
 
     // Simulate the dispatcher consuming the declared (HEADER_SIZE=2) accounts.
-    let _ = unsafe { cursor.walk_n(2) };
+    let _ = walk::<2>(&mut cursor);
     assert_eq!(cursor.consumed(), 2);
 
     let program_id = Address::new_from_array([0x42; 32]);
@@ -194,9 +169,59 @@ fn remaining_accounts_walks_trailing_region() {
 
     let remaining = ctx.remaining_accounts();
     assert_eq!(remaining.len(), 3);
-    assert_eq!(remaining[0].address().to_bytes(), unique_addr(2));
-    assert_eq!(remaining[1].address().to_bytes(), unique_addr(3));
-    assert_eq!(remaining[2].address().to_bytes(), unique_addr(4));
+    assert_eq!(
+        remaining.get(0).unwrap().address().to_bytes(),
+        unique_addr(2)
+    );
+    assert_eq!(
+        remaining.get(1).unwrap().address().to_bytes(),
+        unique_addr(3)
+    );
+    assert_eq!(
+        remaining.get(2).unwrap().address().to_bytes(),
+        unique_addr(4)
+    );
+}
+
+#[test]
+fn remaining_accounts_resolves_declared_and_trailing_duplicate_chains() {
+    let records = [
+        non_dup(0),
+        non_dup(1),
+        AccountRecord::Dup { index: 1 },
+        AccountRecord::Dup { index: 2 },
+        AccountRecord::Dup { index: 0 },
+    ];
+    let mut sbf = SbfInputBuffer::build(&records);
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
+    let _ = walk::<1>(&mut cursor);
+
+    let program_id = Address::new_from_array([0x42; 32]);
+    let mut ctx: Context<'_, DummyHeader> =
+        Context::new(&program_id, DummyHeader, (), &mut cursor, 4);
+    let remaining = ctx.remaining_accounts();
+
+    let addresses: Vec<_> = remaining
+        .iter()
+        .map(|account| account.address().to_bytes())
+        .collect();
+    assert_eq!(
+        addresses,
+        vec![
+            unique_addr(1),
+            unique_addr(1),
+            unique_addr(1),
+            unique_addr(0),
+        ]
+    );
+    assert_eq!(
+        remaining.get(2).unwrap().address().to_bytes(),
+        unique_addr(1)
+    );
+    assert_eq!(
+        remaining.get(3).unwrap().address().to_bytes(),
+        unique_addr(0)
+    );
 }
 
 #[test]
@@ -207,11 +232,9 @@ fn remaining_account_views_expose_compat_helpers() {
         non_dup_with_data(2, 32),
     ];
     let mut sbf = SbfInputBuffer::build(&records);
-    let mut lookup = fresh_lookup();
-    let mut cursor =
-        unsafe { AccountCursor::new(sbf.as_mut_ptr(), lookup.as_mut_ptr() as *mut AccountView) };
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
 
-    let _ = unsafe { cursor.walk_n(1) };
+    let _ = walk::<1>(&mut cursor);
 
     let program_id = Address::new_from_array([0x42; 32]);
     let mut ctx: Context<'_, DummyHeader> = Context::new(
@@ -223,7 +246,7 @@ fn remaining_account_views_expose_compat_helpers() {
     );
 
     let remaining = ctx.remaining_accounts();
-    let mut account = remaining[0];
+    let mut account = remaining.get(0).unwrap();
     assert_eq!(account.key().to_bytes(), unique_addr(1));
     assert!(!account.data_is_empty());
     assert_eq!(account.try_data_len().unwrap(), 16);
@@ -234,19 +257,12 @@ fn remaining_account_views_expose_compat_helpers() {
 #[test]
 fn remaining_accounts_returns_empty_when_nothing_trails() {
     let mut sbf = SbfInputBuffer::build(&[non_dup(0), non_dup(1)]);
-    let mut lookup = fresh_lookup();
-    let mut cursor =
-        unsafe { AccountCursor::new(sbf.as_mut_ptr(), lookup.as_mut_ptr() as *mut AccountView) };
-    let _ = unsafe { cursor.walk_n(2) };
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
+    let _ = walk::<2>(&mut cursor);
 
     let program_id = Address::new_from_array([0x42; 32]);
-    let mut ctx: Context<'_, DummyHeader> = Context::new(
-        &program_id,
-        DummyHeader,
-        (),
-        &mut cursor,
-        0,
-    );
+    let mut ctx: Context<'_, DummyHeader> =
+        Context::new(&program_id, DummyHeader, (), &mut cursor, 0);
 
     assert!(ctx.remaining_accounts().is_empty());
     // Second call on empty — still empty, no cache bookkeeping bug.
@@ -254,15 +270,13 @@ fn remaining_accounts_returns_empty_when_nothing_trails() {
 }
 
 #[test]
-fn remaining_accounts_caches_and_does_not_re_walk_cursor() {
-    // If the cache were bypassed, the second `remaining_accounts` call
+fn remaining_accounts_reuses_range_and_does_not_re_walk_cursor() {
+    // If the stored range were bypassed, the second `remaining_accounts` call
     // would re-enter the cursor past its current position and read
     // garbage (or undefined behaviour) past the input buffer tail.
     let mut sbf = SbfInputBuffer::build(&[non_dup(0), non_dup(1), non_dup(2)]);
-    let mut lookup = fresh_lookup();
-    let mut cursor =
-        unsafe { AccountCursor::new(sbf.as_mut_ptr(), lookup.as_mut_ptr() as *mut AccountView) };
-    let _ = unsafe { cursor.walk_n(1) };
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
+    let _ = walk::<1>(&mut cursor);
 
     let program_id = Address::new_from_array([0x42; 32]);
     let consumed_before = cursor.consumed();
@@ -277,19 +291,70 @@ fn remaining_accounts_caches_and_does_not_re_walk_cursor() {
     let first = ctx.remaining_accounts();
     let second = ctx.remaining_accounts();
 
-    // Structural equality via address, since AccountView is Copy and the
-    // cache returns a clone each call.
+    // Structural equality via address, since each lazy view resolves the
+    // same serialized account slot.
     assert_eq!(first.len(), 2);
     assert_eq!(second.len(), 2);
     for (a, b) in first.iter().zip(second.iter()) {
         assert_eq!(a.address().to_bytes(), b.address().to_bytes());
     }
     // Cursor must have advanced by exactly `remaining_num` (2), not
-    // twice that — verifies caching short-circuits the walk.
+    // twice that — verifies the stored range short-circuits the walk.
     //
     // NB: `consumed()` reads through the `&mut AccountCursor` stored
     // inside `ctx` so we can't call it on the outer `cursor` binding
     // directly; drop `ctx` first to release the borrow.
     drop(ctx);
     assert_eq!(cursor.consumed(), consumed_before + 2);
+}
+
+#[test]
+fn remaining_accounts_rescan_uses_original_boundaries_after_account_growth() {
+    let program_id = Address::new_from_array([0x42; 32]);
+    let records = [
+        non_dup_with_data(0, 8),
+        non_dup(1),
+        AccountRecord::Dup { index: 0 },
+        non_dup(2),
+    ];
+    let mut sbf = SbfInputBuffer::build(&records);
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
+    let mut declared = unsafe { cursor.next() };
+    declared.resize(17).unwrap();
+
+    let mut ctx: Context<'_, DummyHeader> =
+        Context::new(&program_id, DummyHeader, (), &mut cursor, 3);
+    let remaining = ctx.remaining_accounts();
+
+    assert_eq!(
+        remaining.get(0).unwrap().address().to_bytes(),
+        unique_addr(1)
+    );
+    assert_eq!(
+        remaining.get(1).unwrap().address().to_bytes(),
+        unique_addr(0)
+    );
+    assert_eq!(
+        remaining.get(2).unwrap().address().to_bytes(),
+        unique_addr(2)
+    );
+}
+
+#[test]
+fn remaining_accounts_rescan_uses_original_boundaries_after_account_shrink() {
+    let program_id = Address::new_from_array([0x42; 32]);
+    let mut sbf = SbfInputBuffer::build(&[non_dup_with_data(0, 17), non_dup(1), non_dup(2)]);
+    let mut cursor = unsafe { AccountCursor::new(sbf.as_mut_ptr()) };
+    let mut declared = unsafe { cursor.next() };
+    declared.resize(3).unwrap();
+
+    let mut ctx: Context<'_, DummyHeader> =
+        Context::new(&program_id, DummyHeader, (), &mut cursor, 2);
+    let addresses: Vec<_> = ctx
+        .remaining_accounts()
+        .iter()
+        .map(|account| account.address().to_bytes())
+        .collect();
+
+    assert_eq!(addresses, vec![unique_addr(1), unique_addr(2)]);
 }

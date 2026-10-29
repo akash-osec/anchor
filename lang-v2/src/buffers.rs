@@ -1,7 +1,6 @@
 use crate::{AccountMeta, CpiHandle, FixedVec};
 
 pub const MAX_INSTRUCTION_DATA: usize = 1232;
-pub const MAX_EVENT_CPI_DATA: usize = 256 + 8;
 
 pub type AccountMetaBuffer<const N: usize> = FixedVec<AccountMeta, N>;
 pub type InstructionAccountBuffer<'a, const N: usize> =

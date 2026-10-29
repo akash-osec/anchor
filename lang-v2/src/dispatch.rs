@@ -1,5 +1,10 @@
 use {
-    crate::{context::{Bumps, Context}, cursor::AccountCursor, loader::AccountLoader},
+    crate::{
+        context::{Bumps, Context},
+        cursor::AccountCursor,
+        loader::AccountLoader,
+    },
+    core::mem::MaybeUninit,
     pinocchio::{account::AccountView, address::Address},
     solana_program_error::ProgramError,
 };
@@ -7,7 +12,7 @@ use {
 /// Trait that `#[derive(Accounts)]` implements on account structs.
 ///
 /// `try_accounts` receives a pre-walked `&[AccountView]` slice (from a
-/// single `walk_n(HEADER_SIZE)` in [`run_handler`]) rather than the raw
+/// single `walk_into` in [`run_handler`]) rather than the raw
 /// cursor. This lets `Nested<Inner>` fields pass a sub-slice to
 /// `Inner::validate_accounts` without re-walking the cursor or fighting
 /// borrow-checker splits.
@@ -48,28 +53,32 @@ pub trait TryAccounts: Bumps + Sized {
 
 /// Run a handler inside a fully-constructed [`Context`].
 ///
-/// Walks all declared accounts in one `walk_n(HEADER_SIZE)` call, then
+/// Walks all declared accounts into storage owned by the generated wrapper,
 /// passes the views slice to `T::validate_accounts` for per-field loading and
 /// constraint checking. The residual cursor (past the declared accounts) is
 /// handed to `Context` for lazy `remaining_accounts()` access.
 #[inline(always)]
+#[doc(hidden)]
 pub fn run_handler<'a, T: TryAccounts, R>(
     program_id: &'a Address,
     cursor: &'a mut AccountCursor,
     ix_data: &'a [u8],
     num_accounts: usize,
+    view_storage: &mut [MaybeUninit<AccountView>],
     handler: impl FnOnce(&mut Context<'a, T>, T::IxArgs<'a>) -> Result<R, ProgramError>,
 ) -> Result<R, ProgramError> {
     if num_accounts < T::HEADER_SIZE {
         return Err(crate::ErrorCode::AccountNotEnoughKeys.into());
     }
+    if view_storage.len() != T::HEADER_SIZE {
+        return Err(ProgramError::InvalidArgument);
+    }
     let (ctx_accounts, bumps, ix_args) = {
         let mut loader = AccountLoader::new(cursor);
-        let views = loader.walk_n(T::HEADER_SIZE);
+        let views = unsafe { loader.walk_into(view_storage) };
         T::validate_accounts(program_id, views, ix_data)?
     };
-    const _: () = assert!(pinocchio::MAX_TX_ACCOUNTS <= u8::MAX as usize);
-    let remaining_num = (num_accounts - T::HEADER_SIZE) as u8;
+    let remaining_num = num_accounts - T::HEADER_SIZE;
     let mut ctx = Context::new(program_id, ctx_accounts, bumps, cursor, remaining_num);
     let result = handler(&mut ctx, ix_args)?;
     ctx.accounts.exit_accounts(ix_data)?;

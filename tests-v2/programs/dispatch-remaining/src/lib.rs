@@ -30,7 +30,12 @@ pub mod dispatch_remaining {
         if remaining.len() != expected_count as usize {
             return Err(ProgramError::InvalidArgument.into());
         }
-        if expected_count == 2 && remaining[0].address() != ctx.accounts.counter.account().address()
+        if expected_count == 2
+            && remaining
+                .get(0)
+                .ok_or(ProgramError::InvalidArgument)?
+                .address()
+                != ctx.accounts.counter.account().address()
         {
             return Err(ProgramError::InvalidAccountData.into());
         }
@@ -44,7 +49,17 @@ pub mod dispatch_remaining {
         if first.len() != 2 || second.len() != 2 {
             return Err(ProgramError::InvalidArgument.into());
         }
-        if first[0].address() != second[0].address() || first[1].address() != second[1].address() {
+        if first.get(0).ok_or(ProgramError::InvalidArgument)?.address()
+            != second
+                .get(0)
+                .ok_or(ProgramError::InvalidArgument)?
+                .address()
+            || first.get(1).ok_or(ProgramError::InvalidArgument)?.address()
+                != second
+                    .get(1)
+                    .ok_or(ProgramError::InvalidArgument)?
+                    .address()
+        {
             return Err(ProgramError::InvalidAccountData.into());
         }
         Ok(())
@@ -92,7 +107,12 @@ pub mod dispatch_remaining {
         mutable: bool,
     ) -> Result<()> {
         ctx.accounts.counter.value = 7;
-        load_first_remaining(ctx.remaining_accounts()[0], mutable)
+        load_first_remaining(
+            ctx.remaining_accounts()
+                .get(0)
+                .ok_or(ProgramError::InvalidArgument)?,
+            mutable,
+        )
     }
 
     #[discrim = 8]
@@ -101,7 +121,12 @@ pub mod dispatch_remaining {
         mutable: bool,
     ) -> Result<()> {
         let _ = ctx.accounts.counter.value;
-        load_first_remaining(ctx.remaining_accounts()[0], mutable)
+        load_first_remaining(
+            ctx.remaining_accounts()
+                .get(0)
+                .ok_or(ProgramError::InvalidArgument)?,
+            mutable,
+        )
     }
 }
 

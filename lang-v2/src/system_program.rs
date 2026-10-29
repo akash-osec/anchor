@@ -5,7 +5,7 @@
 
 use {
     crate::{
-        require, CpiContext, CpiHandle, CpiHandleMut, Id, ToCpiAccounts,
+        require, CpiContext, CpiHandle, CpiHandleMut, FixedVec, Id, ToCpiAccounts,
         ToCpiAccountsWithCapacity,
     },
     pinocchio::address::MAX_SEED_LEN,
@@ -19,6 +19,14 @@ pub const ID: Address = crate::address!("11111111111111111111111111111111");
 
 const NONCE_ACCOUNT_LENGTH: u64 = 80;
 
+const INSTRUCTION_TAG_BYTES: usize = core::mem::size_of::<u32>();
+const ADDRESS_BYTES: usize = core::mem::size_of::<Address>();
+const U64_BYTES: usize = core::mem::size_of::<u64>();
+const MAX_SEED_DATA_BYTES: usize =
+    INSTRUCTION_TAG_BYTES + ADDRESS_BYTES + U64_BYTES + MAX_SEED_LEN + U64_BYTES + ADDRESS_BYTES;
+
+type SystemInstructionData<const N: usize> = FixedVec<u8, N>;
+
 #[inline]
 fn check_system_program(program: &Address) -> ProgramResult {
     require!(
@@ -29,27 +37,39 @@ fn check_system_program(program: &Address) -> ProgramResult {
 }
 
 #[inline]
-fn encode_u32(
+fn encode_u32<const N: usize>(
     value: u32,
-    data: &mut crate::InstructionDataBuffer,
+    data: &mut SystemInstructionData<N>,
 ) -> Result<(), ProgramError> {
-    crate::try_extend_instruction_data(data, &value.to_le_bytes())
+    data.try_extend_from_slice(&value.to_le_bytes())
+        .map_err(|_| ProgramError::InvalidInstructionData)
 }
 
 #[inline]
-fn encode_u64(
+fn encode_u64<const N: usize>(
     value: u64,
-    data: &mut crate::InstructionDataBuffer,
+    data: &mut SystemInstructionData<N>,
 ) -> Result<(), ProgramError> {
-    crate::try_extend_instruction_data(data, &value.to_le_bytes())
+    data.try_extend_from_slice(&value.to_le_bytes())
+        .map_err(|_| ProgramError::InvalidInstructionData)
 }
 
 #[inline]
-fn encode_address(
+fn encode_address<const N: usize>(
     value: &Address,
-    data: &mut crate::InstructionDataBuffer,
+    data: &mut SystemInstructionData<N>,
 ) -> Result<(), ProgramError> {
-    crate::try_extend_instruction_data(data, value.as_ref())
+    data.try_extend_from_slice(value.as_ref())
+        .map_err(|_| ProgramError::InvalidInstructionData)
+}
+
+#[inline]
+fn encode_bytes<const N: usize>(
+    data: &mut SystemInstructionData<N>,
+    bytes: &[u8],
+) -> Result<(), ProgramError> {
+    data.try_extend_from_slice(bytes)
+        .map_err(|_| ProgramError::InvalidInstructionData)
 }
 
 fn checked_seed(seed: &str) -> Result<&[u8], ProgramError> {
@@ -87,7 +107,7 @@ pub fn allocate<'a>(
     ctx: CpiContext<'a, Allocate<'a>, 1>,
     space: u64,
 ) -> ProgramResult {
-    let mut data = crate::InstructionDataBuffer::new();
+    let mut data = SystemInstructionData::<{ INSTRUCTION_TAG_BYTES + U64_BYTES }>::new();
     encode_u32(8, &mut data)?;
     encode_u64(space, &mut data)?;
     invoke(&ctx, &data)
@@ -106,11 +126,11 @@ pub fn allocate_with_seed<'a>(
     owner: &Address,
 ) -> ProgramResult {
     let seed = checked_seed(seed)?;
-    let mut data = crate::InstructionDataBuffer::new();
+    let mut data = SystemInstructionData::<MAX_SEED_DATA_BYTES>::new();
     encode_u32(9, &mut data)?;
     encode_address(ctx.accounts.base.address(), &mut data)?;
     encode_u64(seed.len() as u64, &mut data)?;
-    crate::try_extend_instruction_data(&mut data, seed)?;
+    encode_bytes(&mut data, seed)?;
     encode_u64(space, &mut data)?;
     encode_address(owner, &mut data)?;
     invoke(&ctx, &data)
@@ -127,7 +147,7 @@ pub fn assign<'a>(
     ctx: CpiContext<'a, Assign<'a>, 1>,
     owner: &Address,
 ) -> ProgramResult {
-    let mut data = crate::InstructionDataBuffer::new();
+    let mut data = SystemInstructionData::<{ INSTRUCTION_TAG_BYTES + ADDRESS_BYTES }>::new();
     encode_u32(1, &mut data)?;
     encode_address(owner, &mut data)?;
     invoke(&ctx, &data)
@@ -145,11 +165,13 @@ pub fn assign_with_seed<'a>(
     owner: &Address,
 ) -> ProgramResult {
     let seed = checked_seed(seed)?;
-    let mut data = crate::InstructionDataBuffer::new();
+    let mut data = SystemInstructionData::<
+        { INSTRUCTION_TAG_BYTES + ADDRESS_BYTES + U64_BYTES + MAX_SEED_LEN + ADDRESS_BYTES },
+    >::new();
     encode_u32(10, &mut data)?;
     encode_address(ctx.accounts.base.address(), &mut data)?;
     encode_u64(seed.len() as u64, &mut data)?;
-    crate::try_extend_instruction_data(&mut data, seed)?;
+    encode_bytes(&mut data, seed)?;
     encode_address(owner, &mut data)?;
     invoke(&ctx, &data)
 }
@@ -165,7 +187,7 @@ pub fn authorize_nonce_account<'a>(
     ctx: CpiContext<'a, AuthorizeNonceAccount<'a>, 2>,
     new_authority: &Address,
 ) -> ProgramResult {
-    let mut data = crate::InstructionDataBuffer::new();
+    let mut data = SystemInstructionData::<{ INSTRUCTION_TAG_BYTES + ADDRESS_BYTES }>::new();
     encode_u32(7, &mut data)?;
     encode_address(new_authority, &mut data)?;
     invoke(&ctx, &data)
@@ -184,7 +206,9 @@ pub fn create_account<'a>(
     space: u64,
     owner: &Address,
 ) -> ProgramResult {
-    let mut data = crate::InstructionDataBuffer::new();
+    let mut data = SystemInstructionData::<
+        { INSTRUCTION_TAG_BYTES + U64_BYTES + U64_BYTES + ADDRESS_BYTES },
+    >::new();
     encode_u32(0, &mut data)?;
     encode_u64(lamports, &mut data)?;
     encode_u64(space, &mut data)?;
@@ -208,11 +232,21 @@ pub fn create_account_with_seed<'a>(
     owner: &Address,
 ) -> ProgramResult {
     let seed = checked_seed(seed)?;
-    let mut data = crate::InstructionDataBuffer::new();
+    let mut data = SystemInstructionData::<
+        {
+            INSTRUCTION_TAG_BYTES
+                + ADDRESS_BYTES
+                + U64_BYTES
+                + MAX_SEED_LEN
+                + U64_BYTES
+                + U64_BYTES
+                + ADDRESS_BYTES
+        },
+    >::new();
     encode_u32(3, &mut data)?;
     encode_address(ctx.accounts.base.address(), &mut data)?;
     encode_u64(seed.len() as u64, &mut data)?;
-    crate::try_extend_instruction_data(&mut data, seed)?;
+    encode_bytes(&mut data, seed)?;
     encode_u64(lamports, &mut data)?;
     encode_u64(space, &mut data)?;
     encode_address(owner, &mut data)?;
@@ -328,7 +362,7 @@ pub fn transfer<'a>(
     ctx: CpiContext<'a, Transfer<'a>, 2>,
     lamports: u64,
 ) -> ProgramResult {
-    let mut data = crate::InstructionDataBuffer::new();
+    let mut data = SystemInstructionData::<{ INSTRUCTION_TAG_BYTES + U64_BYTES }>::new();
     encode_u32(2, &mut data)?;
     encode_u64(lamports, &mut data)?;
     invoke(&ctx, &data)
@@ -348,11 +382,13 @@ pub fn transfer_with_seed<'a>(
     lamports: u64,
 ) -> ProgramResult {
     let seed = checked_seed(from_seed)?;
-    let mut data = crate::InstructionDataBuffer::new();
+    let mut data = SystemInstructionData::<
+        { INSTRUCTION_TAG_BYTES + U64_BYTES + U64_BYTES + MAX_SEED_LEN + ADDRESS_BYTES },
+    >::new();
     encode_u32(11, &mut data)?;
     encode_u64(lamports, &mut data)?;
     encode_u64(seed.len() as u64, &mut data)?;
-    crate::try_extend_instruction_data(&mut data, seed)?;
+    encode_bytes(&mut data, seed)?;
     encode_address(from_owner, &mut data)?;
     invoke(&ctx, &data)
 }
@@ -369,7 +405,7 @@ pub fn withdraw_nonce_account<'a>(
     ctx: CpiContext<'a, WithdrawNonceAccount<'a>, 5>,
     lamports: u64,
 ) -> ProgramResult {
-    let mut data = crate::InstructionDataBuffer::new();
+    let mut data = SystemInstructionData::<{ INSTRUCTION_TAG_BYTES + U64_BYTES }>::new();
     encode_u32(5, &mut data)?;
     encode_u64(lamports, &mut data)?;
     invoke(&ctx, &data)
@@ -396,7 +432,7 @@ fn initialize_nonce_account<'a, const N: usize>(
     ctx: CpiContext<'a, InitializeNonceAccount<'a>, N>,
     authority: &Address,
 ) -> ProgramResult {
-    let mut data = crate::InstructionDataBuffer::new();
+    let mut data = SystemInstructionData::<{ INSTRUCTION_TAG_BYTES + ADDRESS_BYTES }>::new();
     encode_u32(6, &mut data)?;
     encode_address(authority, &mut data)?;
     invoke(&ctx, &data)

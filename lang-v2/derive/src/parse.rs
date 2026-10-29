@@ -2493,7 +2493,7 @@ pub fn parse_field(
         );
         // Nested<Inner> — delegate to Inner::validate_accounts, which advances
         // the shared cursor by Inner::HEADER_SIZE without firing inner
-        // update-hooks yet. The outer walk_n covers only direct
+        // update-hooks yet. The outer account-view walk covers only direct
         // (non-nested) fields; the nested validate_accounts picks up where
         // the outer left off, and the outer update phase later calls
         // Inner::update_accounts exactly once.

@@ -4032,6 +4032,65 @@ fn gen_declare_program_constants(idl: &serde_json::Value) -> syn::Result<Vec<Tok
     Ok(out)
 }
 
+fn bounded_idl_serialized_len(ty: &serde_json::Value) -> Option<TokenStream2> {
+    if let Some(primitive) = ty.as_str() {
+        let bytes = match primitive {
+            "bool" | "u8" | "i8" => 1usize,
+            "u16" | "i16" => 2,
+            "u32" | "i32" | "f32" | "char" => 4,
+            "u64" | "i64" | "f64" => 8,
+            "u128" | "i128" => 16,
+            "u256" | "i256" | "pubkey" => 32,
+            // Length-prefixed values do not carry a maximum in the IDL.
+            "bytes" | "string" => return None,
+            _ => return None,
+        };
+        return Some(quote! { #bytes });
+    }
+
+    let object = ty.as_object()?;
+    if let Some(inner) = object.get("option") {
+        let inner = bounded_idl_serialized_len(inner)?;
+        return Some(quote! { 1usize + (#inner) });
+    }
+    if object.contains_key("vec")
+        || object.contains_key("defined")
+        || object.contains_key("generic")
+    {
+        return None;
+    }
+    if let Some(array) = object.get("array").and_then(serde_json::Value::as_array) {
+        let [element, len] = array.as_slice() else {
+            return None;
+        };
+        let element = bounded_idl_serialized_len(element)?;
+        let len = len.as_u64()? as usize;
+        return Some(quote! { (#element) * #len });
+    }
+    None
+}
+
+fn bounded_declared_type_serialized_len(ty_def: &serde_json::Value) -> Option<TokenStream2> {
+    let ty = ty_def.get("type")?;
+    match ty.get("kind")?.as_str()? {
+        "struct" => {
+            let Some(fields) = ty.get("fields") else {
+                return Some(quote! { 0usize });
+            };
+            let fields = fields.as_array()?;
+            let bounds = fields
+                .iter()
+                .map(|field| bounded_idl_serialized_len(field.get("type").unwrap_or(field)))
+                .collect::<Option<Vec<_>>>()?;
+            Some(quote! { 0usize #(+ (#bounds))* })
+        }
+        "type" => bounded_idl_serialized_len(ty.get("alias")?),
+        // Enum bounds require resolving every variant and any referenced type.
+        // Falling back to the protocol maximum is conservative.
+        _ => None,
+    }
+}
+
 fn gen_declare_program_events(idl: &serde_json::Value) -> syn::Result<TokenStream2> {
     let Some(events) = idl.get("events").and_then(serde_json::Value::as_array) else {
         return Ok(quote! {
@@ -4081,6 +4140,21 @@ fn gen_declare_program_events(idl: &serde_json::Value) -> syn::Result<TokenStrea
         })?;
         let serialization = declare_type_serialization(ty_def, span)?;
 
+        let event_data_bound = if serialization.is_bytemuck() {
+            Some(quote! {
+                <Self as anchor_lang::Discriminator>::DISCRIMINATOR.len()
+                    + ::core::mem::size_of::<Self>()
+            })
+        } else {
+            bounded_declared_type_serialized_len(ty_def).map(|payload| {
+                quote! {
+                    <Self as anchor_lang::Discriminator>::DISCRIMINATOR.len()
+                        + (#payload)
+                }
+            })
+        };
+        let event_runtime_methods = event_runtime_methods(event_data_bound);
+
         event_reexports.push(quote! { pub use super::#ident; });
         parser_variants.push(quote! { #ident(super::events::#ident) });
 
@@ -4088,16 +4162,25 @@ fn gen_declare_program_events(idl: &serde_json::Value) -> syn::Result<TokenStrea
             quote! {
                 impl anchor_lang::Event for #ident {
                     fn try_data(&self) -> anchor_lang::Result<anchor_lang::InstructionDataBuffer> {
-                        let disc = <Self as anchor_lang::Discriminator>::DISCRIMINATOR;
-                        let payload = anchor_lang::bytemuck::bytes_of(self);
                         let mut data =
                             anchor_lang::InstructionDataBuffer::new();
+                        self.try_data_into(&mut data)?;
+                        Ok(data)
+                    }
+
+                    fn try_data_into<const N: usize>(
+                        &self,
+                        data: &mut anchor_lang::FixedVec<u8, N>,
+                    ) -> anchor_lang::Result<()> {
+                        let disc = <Self as anchor_lang::Discriminator>::DISCRIMINATOR;
+                        let payload = anchor_lang::bytemuck::bytes_of(self);
                         data.try_extend_from_slice(disc)
                             .map_err(|_| anchor_lang::Error::InvalidInstructionData)?;
                         data.try_extend_from_slice(payload)
-                            .map_err(|_| anchor_lang::Error::InvalidInstructionData)?;
-                        Ok(data)
+                            .map_err(|_| anchor_lang::Error::InvalidInstructionData)
                     }
+
+                    #event_runtime_methods
 
                     #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
                     fn data(&self) -> anchor_lang::InstructionDataBuffer {
@@ -4109,19 +4192,28 @@ fn gen_declare_program_events(idl: &serde_json::Value) -> syn::Result<TokenStrea
             quote! {
                 impl anchor_lang::Event for #ident {
                     fn try_data(&self) -> anchor_lang::Result<anchor_lang::InstructionDataBuffer> {
-                        let disc = <Self as anchor_lang::Discriminator>::DISCRIMINATOR;
                         let mut data =
                             anchor_lang::InstructionDataBuffer::new();
+                        self.try_data_into(&mut data)?;
+                        Ok(data)
+                    }
+
+                    fn try_data_into<const N: usize>(
+                        &self,
+                        data: &mut anchor_lang::FixedVec<u8, N>,
+                    ) -> anchor_lang::Result<()> {
+                        let disc = <Self as anchor_lang::Discriminator>::DISCRIMINATOR;
                         data.try_extend_from_slice(disc)
                             .map_err(|_| anchor_lang::Error::InvalidInstructionData)?;
                         anchor_lang::wincode::config::serialize_into(
-                            &mut data,
+                            data,
                             self,
                             anchor_lang::BORSH_CONFIG,
                         )
-                        .map_err(|_| anchor_lang::Error::InvalidInstructionData)?;
-                        Ok(data)
+                        .map_err(|_| anchor_lang::Error::InvalidInstructionData)
                     }
+
+                    #event_runtime_methods
 
                     #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
                     fn data(&self) -> anchor_lang::InstructionDataBuffer {
@@ -5145,6 +5237,151 @@ fn is_unit_type(ty: &Type) -> bool {
     matches!(ty, Type::Tuple(tuple) if tuple.elems.is_empty())
 }
 
+fn path_matches(path: &syn::Path, expected: &[&str]) -> bool {
+    path.segments.len() == expected.len()
+        && path
+            .segments
+            .iter()
+            .zip(expected)
+            .all(|(segment, expected)| segment.ident == *expected)
+}
+
+fn is_canonical_address(path: &syn::Path) -> bool {
+    path_matches(path, &["anchor_lang", "Address"])
+        || path_matches(path, &["anchor_lang", "prelude", "Address"])
+        || path_matches(path, &["solana_address", "Address"])
+        || path_matches(path, &["solana_pubkey", "Pubkey"])
+}
+
+/// Conservative upper bound for the BORSH_CONFIG encoding of a type.
+///
+/// Returning `None` is intentional: opaque user types and borrowed/dynamic
+/// values fall back to the protocol data limit instead of relying on their
+/// unrelated in-memory size.
+fn bounded_serialized_len(ty: &Type) -> Option<TokenStream2> {
+    match ty {
+        Type::Array(array) => {
+            let element = bounded_serialized_len(&array.elem)?;
+            let len = &array.len;
+            Some(quote! { (#element) * (#len) })
+        }
+        Type::Group(group) => bounded_serialized_len(&group.elem),
+        Type::Paren(paren) => bounded_serialized_len(&paren.elem),
+        Type::Tuple(tuple) => {
+            let elements = tuple
+                .elems
+                .iter()
+                .map(bounded_serialized_len)
+                .collect::<Option<Vec<_>>>()?;
+            Some(quote! { 0usize #(+ (#elements))* })
+        }
+        Type::Path(path) if path.qself.is_none() => {
+            let segment = path.path.segments.last()?;
+            let ident = segment.ident.to_string();
+            let fixed = if path.path.segments.len() == 1 {
+                match ident.as_str() {
+                    "bool" | "u8" | "i8" => Some(1usize),
+                    "u16" | "i16" => Some(2),
+                    "u32" | "i32" | "f32" | "char" => Some(4),
+                    "u64" | "i64" | "f64" => Some(8),
+                    "u128" | "i128" => Some(16),
+                    _ => None,
+                }
+            } else if is_canonical_address(&path.path) {
+                Some(32)
+            } else {
+                None
+            };
+            if let Some(bytes) = fixed {
+                return Some(quote! { #bytes });
+            }
+
+            let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+                return None;
+            };
+            if path_matches(&path.path, &["core", "option", "Option"])
+                || path_matches(&path.path, &["std", "option", "Option"])
+            {
+                let inner = arguments.args.iter().find_map(|argument| match argument {
+                    syn::GenericArgument::Type(ty) => Some(ty),
+                    _ => None,
+                })?;
+                let inner = bounded_serialized_len(inner)?;
+                return Some(quote! { 1usize + (#inner) });
+            }
+            if path_matches(&path.path, &["anchor_lang", "FixedVec"]) {
+                let mut args = arguments.args.iter();
+                let inner = match args.next()? {
+                    syn::GenericArgument::Type(ty) => bounded_serialized_len(ty)?,
+                    _ => return None,
+                };
+                let capacity = match args.next()? {
+                    syn::GenericArgument::Const(capacity) => capacity,
+                    _ => return None,
+                };
+                return Some(quote! { 4usize + (#capacity) * (#inner) });
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn bounded_fields_serialized_len(fields: &Fields) -> Option<TokenStream2> {
+    let fields = fields
+        .iter()
+        .map(|field| bounded_serialized_len(&field.ty))
+        .collect::<Option<Vec<_>>>()?;
+    Some(quote! { 0usize #(+ (#fields))* })
+}
+
+fn capped_capacity(bound: TokenStream2, maximum: TokenStream2) -> TokenStream2 {
+    quote! {{
+        if (#bound) < (#maximum) { #bound } else { #maximum }
+    }}
+}
+
+fn event_runtime_methods(event_data_bound: Option<TokenStream2>) -> TokenStream2 {
+    let event_data_capacity = event_data_bound
+        .clone()
+        .map(|bound| capped_capacity(bound, quote! { anchor_lang::MAX_INSTRUCTION_DATA }))
+        .unwrap_or_else(|| quote! { anchor_lang::MAX_INSTRUCTION_DATA });
+    let event_cpi_capacity = event_data_bound
+        .map(|bound| {
+            capped_capacity(
+                quote! { anchor_lang::event::EVENT_IX_TAG_LE.len() + (#bound) },
+                quote! { anchor_lang::MAX_INSTRUCTION_DATA },
+            )
+        })
+        .unwrap_or_else(|| quote! { anchor_lang::MAX_INSTRUCTION_DATA });
+
+    quote! {
+        fn __emit(&self) -> anchor_lang::Result<()> {
+            let mut data = anchor_lang::FixedVec::<
+                u8,
+                { #event_data_capacity },
+            >::new();
+            self.try_data_into(&mut data)?;
+            anchor_lang::sol_log_data(&[data.as_slice()]);
+            Ok(())
+        }
+
+        fn __with_cpi_data<R>(
+            &self,
+            callback: impl FnOnce(&[u8]) -> anchor_lang::Result<R>,
+        ) -> anchor_lang::Result<R> {
+            let mut data = anchor_lang::FixedVec::<
+                u8,
+                { #event_cpi_capacity },
+            >::new();
+            data.try_extend_from_slice(anchor_lang::event::EVENT_IX_TAG_LE)
+                .map_err(|_| anchor_lang::Error::InvalidInstructionData)?;
+            self.try_data_into(&mut data)?;
+            callback(data.as_slice())
+        }
+    }
+}
+
 fn unsupported_wincode_idl_attr_error(
     surface: &str,
     attrs: &[syn::Attribute],
@@ -5283,9 +5520,22 @@ fn process_handler(
             }
         })
         .unwrap_or_else(|| quote! { "" });
+    let return_data_capacity = return_type
+        .as_ref()
+        .and_then(bounded_serialized_len)
+        .map(|bound| {
+            capped_capacity(
+                bound,
+                quote! { anchor_lang::pinocchio::cpi::MAX_RETURN_DATA },
+            )
+        })
+        .unwrap_or_else(|| quote! { anchor_lang::pinocchio::cpi::MAX_RETURN_DATA });
     let set_return_data = returns_value.then(|| {
         quote! {
-            let mut __return_data = anchor_lang::InstructionDataBuffer::new();
+            let mut __return_data = anchor_lang::FixedVec::<
+                u8,
+                { #return_data_capacity },
+            >::new();
             if anchor_lang::wincode::config::serialize_into(
                 &mut __return_data,
                 &__result,
@@ -5415,11 +5665,16 @@ fn process_handler(
                 #[inline(always)]
                 fn __anchor_assert_no_ix_args(_: ()) {}
 
+                let mut __account_views = [
+                    const { ::core::mem::MaybeUninit::<anchor_lang::AccountView>::uninit() };
+                    <#accounts_path as anchor_lang::TryAccounts>::HEADER_SIZE
+                ];
                 match anchor_lang::run_handler::<#accounts_path, #return_ty>(
                     __program_id,
                     __cursor,
                     __ix_data,
                     __num_accounts,
+                    &mut __account_views,
                     |__ctx, __ix_args| {
                         __anchor_assert_no_ix_args(__ix_args);
                         #mod_name::#fn_name(__ctx)
@@ -5462,11 +5717,16 @@ fn process_handler(
                     }
                 }
 
+                let mut __account_views = [
+                    const { ::core::mem::MaybeUninit::<anchor_lang::AccountView>::uninit() };
+                    <#accounts_path as anchor_lang::TryAccounts>::HEADER_SIZE
+                ];
                 match anchor_lang::run_handler::<#accounts_path, #return_ty>(
                     __program_id,
                     __cursor,
                     __ix_data,
                     __num_accounts,
+                    &mut __account_views,
                     |__ctx, __ix_args| {
                         let (#(#extra_arg_names,)*) =
                             <_ as __AnchorIxArgCoerce<'a>>::__coerce(__ix_args, __ix_data)?;
@@ -5490,15 +5750,21 @@ fn process_handler(
     } else {
         (quote! {}, quote! {})
     };
-    // Keep generated on-chain CPI frames proportional to the instruction
-    // being serialized. The public `InstructionData` buffer remains bounded
-    // by the transaction limit, but using that full buffer inside every CPI
-    // wrapper needlessly reserves 1232 bytes on the SBF stack.
-    let ix_max_data_len = if has_ref_args {
-        quote! { anchor_lang::MAX_INSTRUCTION_DATA }
-    } else {
-        quote! { ::core::mem::size_of::<Self>() + Self::DISCRIMINATOR.len() }
-    };
+    // Reduce CPI data storage only when codegen can prove the serialized upper
+    // bound. Opaque and borrowed shapes use the transaction protocol limit;
+    // their in-memory `size_of` is not a serialization bound.
+    let ix_payload_bound = extra_arg_types
+        .iter()
+        .map(|ty| bounded_serialized_len(ty))
+        .collect::<Option<Vec<_>>>();
+    let ix_max_data_len = ix_payload_bound
+        .map(|bounds| {
+            capped_capacity(
+                quote! { Self::DISCRIMINATOR.len() #(+ (#bounds))* },
+                quote! { anchor_lang::MAX_INSTRUCTION_DATA },
+            )
+        })
+        .unwrap_or_else(|| quote! { anchor_lang::MAX_INSTRUCTION_DATA });
     let instruction_struct = quote! {
         #(#handler_cfg_attrs)*
         #[derive(anchor_lang::AnchorSerialize)]
@@ -5526,18 +5792,24 @@ fn process_handler(
             #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
             fn data(&self) -> anchor_lang::InstructionDataBuffer {
                 let mut data = anchor_lang::InstructionDataBuffer::new();
-                self.__try_data_into(&mut data)
-                    .expect("instruction serialization exceeded the fixed buffer");
+                data.try_extend_from_slice(Self::DISCRIMINATOR)
+                    .expect("host instruction discriminator serialization failed");
+                anchor_lang::wincode::config::serialize_into(
+                    &mut data,
+                    self,
+                    anchor_lang::BORSH_CONFIG,
+                )
+                .expect("host instruction serialization failed");
                 data
             }
         }
-
         #(#handler_cfg_attrs)*
         impl #ix_lt_decl #ix_struct_name #ix_lt_use {
             #[cfg(any(target_os = "solana", target_arch = "bpf"))]
             #[doc(hidden)]
             pub const __MAX_DATA_LEN: usize = #ix_max_data_len;
 
+            #[cfg(any(target_os = "solana", target_arch = "bpf"))]
             #[doc(hidden)]
             pub fn __try_data_into<const N: usize>(
                 &self,
@@ -5907,7 +6179,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
                         anchor_lang::ErrorCode::AccountNotEnoughKeys,
                     ).into();
                 }
-                let mut __cursor = anchor_lang::AccountCursor::new(__input, __lookup);
+                let mut __cursor = anchor_lang::AccountCursor::new(__input);
                 let __event_authority = __cursor.next();
                 if !__event_authority.is_signer() {
                     return anchor_lang::Error::from(
@@ -6047,11 +6319,6 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         #[cfg(not(feature = "no-entrypoint"))]
         anchor_lang::pinocchio::default_panic_handler!();
 
-        /// Matches Solana's transaction-wide account cap (u8 index space).
-        /// The lookup array holds `[AccountView; 256]` = ~2 KiB of frame
-        /// used for duplicate-account resolution during cursor walks.
-        const __ANCHOR_MAX_ACCOUNTS: usize = 256;
-
         /// Core dispatch: program-id check, discriminator parse, account
         /// cursor setup, handler dispatch. Exported as the `entrypoint`
         /// symbol unless `no-entrypoint` is active. Custom entrypoints
@@ -6073,36 +6340,36 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         // can either (a) call this from Rust via its module path, or
         // (b) tail-call it from asm via the unmangled linker symbol.
         //
-        // Both exports are gated on `target_os = "solana"`: the symbol names
-        // only matter to the SBF linker, and un-mangling on host would cause
+        // Both exports are gated to Solana targets: the symbol names only
+        // matter to the SBF linker, and un-mangling on host would cause
         // duplicate-symbol errors whenever two `no-entrypoint` crates end up
         // in the same host-link (e.g. `cargo test` pulling in multiple `cpi`
         // deps).
         #[cfg_attr(
-            all(target_os = "solana", not(feature = "no-entrypoint")),
+            all(
+                any(target_os = "solana", target_arch = "bpf"),
+                not(feature = "no-entrypoint")
+            ),
             export_name = "entrypoint"
         )]
-        #[cfg_attr(all(target_os = "solana", feature = "no-entrypoint"), no_mangle)]
+        #[cfg_attr(
+            all(
+                any(target_os = "solana", target_arch = "bpf"),
+                feature = "no-entrypoint"
+            ),
+            no_mangle
+        )]
         pub unsafe extern "C" fn __anchor_dispatch(
             __input: *mut u8,
             __ix_data_ptr: *const u8,
         ) -> u64 {
-            let mut __lookup: [::core::mem::MaybeUninit<anchor_lang::AccountView>;
-                __ANCHOR_MAX_ACCOUNTS] =
-                [const { ::core::mem::MaybeUninit::uninit() }; __ANCHOR_MAX_ACCOUNTS];
-
-            __anchor_dispatch_internal(
-                __input,
-                __ix_data_ptr,
-                __lookup.as_mut_ptr() as *mut anchor_lang::AccountView,
-            )
+            __anchor_dispatch_internal(__input, __ix_data_ptr)
         }
 
         #[inline(never)]
         unsafe fn __anchor_dispatch_internal(
             __input: *mut u8,
             __ix_data_ptr: *const u8,
-            __lookup: *mut anchor_lang::AccountView,
         ) -> u64 {
             let __ix_data_len = *(__ix_data_ptr.sub(8) as *const u64) as usize;
             let __program_id: &anchor_lang::Address =
@@ -6115,7 +6382,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
             let __num = *(__input as *const u64) as usize;
             #event_cpi_dispatch
 
-            let mut __cursor = anchor_lang::AccountCursor::new(__input, __lookup);
+            let mut __cursor = anchor_lang::AccountCursor::new(__input);
 
             #(#dispatch_arms)*
             anchor_lang::Error::from(
@@ -6311,6 +6578,21 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    let event_data_bound = if matches!(mode, EventMode::Bytemuck) {
+        Some(quote! {
+            <Self as anchor_lang::Discriminator>::DISCRIMINATOR.len()
+                + ::core::mem::size_of::<Self>()
+        })
+    } else {
+        bounded_fields_serialized_len(fields).map(|payload| {
+            quote! {
+                <Self as anchor_lang::Discriminator>::DISCRIMINATOR.len()
+                    + (#payload)
+            }
+        })
+    };
+    let event_runtime_methods = event_runtime_methods(event_data_bound);
+
     // Build the `--- IDL begin event ---` payload. `idl/src/build.rs` expects
     // a JSON object with `event: IdlEvent` (name + discriminator) plus
     // `types: Vec<IdlTypeDef>` (the full struct definition). The default
@@ -6458,6 +6740,8 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
                     )
                         .map_err(|_| anchor_lang::Error::InvalidInstructionData)
                 }
+
+                #event_runtime_methods
 
                 #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
                 fn data(&self) -> anchor_lang::InstructionDataBuffer {
@@ -6633,6 +6917,8 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
                         }
                         Ok(())
                     }
+
+                    #event_runtime_methods
 
                     #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
                     fn data(&self) -> anchor_lang::InstructionDataBuffer {
@@ -6834,9 +7120,7 @@ pub fn emit(input: TokenStream) -> TokenStream {
     let data: proc_macro2::TokenStream = input.into();
     TokenStream::from(quote! {
         {
-            let mut __event_data = anchor_lang::InstructionDataBuffer::new();
-            anchor_lang::Event::try_data_into(&#data, &mut __event_data)?;
-            anchor_lang::sol_log_data(&[__event_data.as_slice()]);
+            anchor_lang::Event::__emit(&(#data))?;
         }
     })
 }
@@ -6889,26 +7173,20 @@ pub fn emit_cpi(input: TokenStream) -> TokenStream {
                 }
             }
 
-            let __event_authority =
-                anchor_lang::AnchorAccount::cpi_handle(&ctx.accounts.event_authority);
-            let mut __ix_data = anchor_lang::FixedVec::<
-                u8,
-                { anchor_lang::MAX_EVENT_CPI_DATA },
-            >::new();
-            __ix_data
-                .try_extend_from_slice(anchor_lang::event::EVENT_IX_TAG_LE)
-                .map_err(|_| anchor_lang::Error::InvalidInstructionData)?;
-            anchor_lang::Event::try_data_into(&#event_struct, &mut __ix_data)?;
-
-            let __event_authority_bump = [ctx.bumps.event_authority];
-            let __event_authority_seeds: &[&[u8]] =
-                &[b"__event_authority", __event_authority_bump.as_ref()];
-            let __event_authority_signers: &[&[&[u8]]] = &[__event_authority_seeds];
-            anchor_lang::CpiContext::<_, 1>::new_with_signer_capacity(
-                ctx.program_id,
-                __AnchorEventCpiAccounts { event_authority: __event_authority },
-                __event_authority_signers,
-            ).invoke(&__ix_data)?;
+            anchor_lang::Event::__with_cpi_data(&(#event_struct), |__ix_data| {
+                let __event_authority =
+                    anchor_lang::AnchorAccount::cpi_handle(&ctx.accounts.event_authority);
+                let __event_authority_bump = [ctx.bumps.event_authority];
+                let __event_authority_seeds: &[&[u8]] =
+                    &[b"__event_authority", __event_authority_bump.as_ref()];
+                let __event_authority_signers: &[&[&[u8]]] = &[__event_authority_seeds];
+                let __result = anchor_lang::CpiContext::<_, 1>::new_with_signer_capacity(
+                    ctx.program_id,
+                    __AnchorEventCpiAccounts { event_authority: __event_authority },
+                    __event_authority_signers,
+                ).invoke(__ix_data);
+                __result
+            })?;
         }
     })
 }
@@ -7310,6 +7588,52 @@ fn to_camel_case(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use {super::*, serde_json::json};
+
+    #[test]
+    fn event_bounds_treat_shadowable_type_names_as_ambiguous() {
+        let ambiguous: Type = syn::parse_quote!(Address);
+        assert!(bounded_serialized_len(&ambiguous).is_none());
+
+        let canonical: Type = syn::parse_quote!(solana_address::Address);
+        assert_eq!(
+            bounded_serialized_len(&canonical).unwrap().to_string(),
+            "32usize"
+        );
+
+        let ambiguous: Type = syn::parse_quote!(Option<u64>);
+        assert!(bounded_serialized_len(&ambiguous).is_none());
+        let canonical: Type = syn::parse_quote!(core::option::Option<u64>);
+        assert!(bounded_serialized_len(&canonical).is_some());
+
+        let ambiguous: Type = syn::parse_quote!(FixedVec<u8, 8>);
+        assert!(bounded_serialized_len(&ambiguous).is_none());
+        let canonical: Type = syn::parse_quote!(anchor_lang::FixedVec<u8, 8>);
+        assert!(bounded_serialized_len(&canonical).is_some());
+    }
+
+    #[test]
+    fn declared_bytemuck_events_generate_exact_runtime_storage_hooks() {
+        let idl = json!({
+            "events": [{
+                "name": "PodEvent",
+                "discriminator": [1, 2, 3, 4]
+            }],
+            "types": [{
+                "name": "PodEvent",
+                "serialization": "bytemuck",
+                "repr": { "kind": "c" },
+                "type": {
+                    "kind": "struct",
+                    "fields": [{ "name": "value", "type": "u64" }]
+                }
+            }]
+        });
+
+        let generated = gen_declare_program_events(&idl).unwrap().to_string();
+        assert!(generated.contains("fn __emit"));
+        assert!(generated.contains("fn __with_cpi_data"));
+        assert!(generated.contains("size_of :: < Self >"));
+    }
 
     #[test]
     fn instruction_attrs_parse() {
