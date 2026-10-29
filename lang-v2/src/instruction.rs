@@ -1,7 +1,12 @@
 //! Allocator-neutral instruction views used by the public CPI API.
 
-use crate::Address;
-use pinocchio::instruction::InstructionAccount;
+#[cfg(any(
+    feature = "alloc",
+    not(any(target_os = "solana", target_arch = "bpf"))
+))]
+extern crate alloc;
+
+use {crate::Address, pinocchio::instruction::InstructionAccount};
 
 /// A CPI instruction that can be inspected without taking ownership of a
 /// heap-backed instruction representation.
@@ -23,10 +28,8 @@ pub trait CpiInstruction {
     /// Borrow instruction account metadata for the duration of a callback.
     /// On-chain instruction views pass their existing slice directly; host
     /// SDK instructions may build a compatibility view inside the callback.
-    fn with_instruction_accounts<R>(
-        &self,
-        visit: impl FnOnce(&[InstructionAccount<'_>]) -> R,
-    ) -> R;
+    fn with_instruction_accounts<R>(&self, visit: impl FnOnce(&[InstructionAccount<'_>]) -> R)
+        -> R;
 }
 
 impl<'a, 'b, 'c, 'd> CpiInstruction for pinocchio::instruction::InstructionView<'a, 'b, 'c, 'd>
@@ -59,6 +62,10 @@ where
     }
 }
 
+#[cfg(any(
+    feature = "alloc",
+    not(any(target_os = "solana", target_arch = "bpf"))
+))]
 impl CpiInstruction for solana_instruction::Instruction {
     #[inline]
     fn program_id(&self) -> &Address {
