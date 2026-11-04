@@ -257,10 +257,10 @@ impl Drop for CpiBorrowGuard {
 }
 
 #[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
-pub(crate) fn enter_cpi<'a>(
+pub(crate) fn enter_cpi<'a, const N: usize>(
     handles: &[CpiHandle<'a>],
-) -> Result<std::vec::Vec<CpiBorrowGuard>, ProgramError> {
-    let mut guards = std::vec::Vec::new();
+) -> Result<alloc::vec::Vec<CpiBorrowGuard>, ProgramError> {
+    let mut guards = alloc::vec::Vec::new();
     for handle in handles {
         if let Some(guard) = handle.enter_cpi() {
             guards.push(guard);
@@ -270,9 +270,9 @@ pub(crate) fn enter_cpi<'a>(
 }
 
 #[cfg(any(target_os = "solana", target_arch = "bpf"))]
-pub(crate) fn enter_cpi<'a>(
+pub(crate) fn enter_cpi<'a, const N: usize>(
     handles: &[CpiHandle<'a>],
-) -> Result<crate::FixedVec<CpiBorrowGuard, { crate::MAX_RUNTIME_ACCOUNT_METAS }>, ProgramError> {
+) -> Result<crate::FixedVec<CpiBorrowGuard, N>, ProgramError> {
     let mut guards = crate::FixedVec::new();
     for handle in handles {
         if let Some(guard) = handle.enter_cpi() {
@@ -873,6 +873,7 @@ impl<T> core::ops::DerefMut for Nested<T> {
 }
 
 #[doc(hidden)]
+#[cfg(not(any(target_os = "solana", target_arch = "bpf")))]
 impl<T: crate::IdlAccountType> crate::IdlAccountType for Nested<T> {
     const __IDL_ACCOUNT_ENTRY: Option<&'static str> = T::__IDL_ACCOUNT_ENTRY;
     const __IDL_TYPE_DEF: Option<&'static str> = T::__IDL_TYPE_DEF;
