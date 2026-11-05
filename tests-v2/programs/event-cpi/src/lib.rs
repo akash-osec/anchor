@@ -20,6 +20,11 @@ pub struct EventCpiLarge {
     pub payload: [u8; 16],
 }
 
+#[event]
+pub struct LargeEventCpiObserved {
+    pub payload: [u8; 300],
+}
+
 #[program]
 pub mod event_cpi_test {
     use super::*;
@@ -50,6 +55,13 @@ pub mod event_cpi_test {
         );
         require!(storage.is_empty(), Error::InvalidInstructionData);
         ctx.accounts.counter.value = 2;
+        Ok(())
+    }
+
+    #[discrim = 3]
+    pub fn emit_large(ctx: &mut Context<EmitOnce>) -> Result<()> {
+        ctx.accounts.counter.value = 300;
+        emit_cpi!(LargeEventCpiObserved { payload: [7; 300] });
         Ok(())
     }
 
