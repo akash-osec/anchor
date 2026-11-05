@@ -275,6 +275,59 @@ fn checked_invoke_optional_none_before_required_program_id_uses_mask() {
 }
 
 #[test]
+fn checked_invoke_preserves_real_program_id_account_before_duplicate_address() {
+    // The first slot is marked as an optional sentinel, but it is also a real
+    // account whose address equals the callee program id. A greedy matcher can
+    // skip it, bind the second slot to the first handle, and then reject the
+    // valid third account. The allocator-backed matcher selected the complete
+    // valid binding, so the bounded matcher must do the same.
+    let first_buffer = account_view([7; 32], false);
+    let second_buffer = account_view([7; 32], false);
+    let third_buffer = account_view([8; 32], false);
+    let first = unsafe { first_buffer.view() };
+    let second = unsafe { second_buffer.view() };
+    let third = unsafe { third_buffer.view() };
+    let ix = Instruction {
+        program_id: ID,
+        accounts: vec![
+            AccountMeta::new_readonly(ID, false),
+            AccountMeta::new_readonly(ID, false),
+            AccountMeta::new_readonly(*third.address(), false),
+        ],
+        data: vec![],
+    };
+    let handles = [
+        first.to_cpi_handle(),
+        second.to_cpi_handle(),
+        third.to_cpi_handle(),
+    ];
+
+    program::invoke_with_optional_sentinels(&ix, &handles, &[true, false, false]).unwrap();
+}
+
+#[test]
+fn checked_invoke_skips_matching_optional_account_when_handle_is_required_later() {
+    let required = account_view([7; 32], false);
+    let extra = account_view([8; 32], false);
+    let required_view = unsafe { required.view() };
+    let extra_view = unsafe { extra.view() };
+    let ix = Instruction {
+        program_id: ID,
+        accounts: vec![
+            AccountMeta::new_readonly(ID, false),
+            AccountMeta::new_readonly(*required_view.address(), false),
+        ],
+        data: vec![],
+    };
+    let handles = [required_view.to_cpi_handle(), extra_view.to_cpi_handle()];
+
+    // The extra trailing handle is allowed by the existing slice-based API.
+    // The matching required account must still consume the first handle
+    // instead of letting the optional sentinel greedily consume it.
+    program::invoke_with_optional_sentinels(&ix, &handles, &[true, false]).unwrap();
+}
+
+#[test]
 fn checked_invoke_accepts_real_program_id_account_before_later_accounts() {
     let first_buffer = account_view([1; 32], false);
     let middle_buffer = account_view([7; 32], false);
@@ -463,7 +516,8 @@ fn invoke_ix_allows_signer_meta_without_tx_signer_when_seeds_are_supplied() {
     };
     let ix = signer_instruction(*view.address(), false);
 
-    CpiContext::<_, 3>::new_with_signer(&program, accounts, &[&[b"pda", &[7]]])
+    let signer_seeds: &[&[u8]] = &[b"pda", &[7]];
+    CpiContext::<_, 3>::new_with_signer(&program, accounts, &[signer_seeds])
         .invoke_ix(ix)
         .unwrap();
 }
@@ -483,7 +537,8 @@ fn invoke_remaining_pda_as_signer_with_seeds() {
     assert!(remaining_accounts
         .try_push(CpiHandle::readonly(&remaining_view).as_signer())
         .is_ok());
-    CpiContext::<_, 3>::new_with_signer(&program, accounts, &[&[b"pda", &[7]]])
+    let signer_seeds: &[&[u8]] = &[b"pda", &[7]];
+    CpiContext::<_, 3>::new_with_signer(&program, accounts, &[signer_seeds])
         .with_remaining_accounts(remaining_accounts)
         .invoke(&[])
         .unwrap();
