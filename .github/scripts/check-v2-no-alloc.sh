@@ -66,6 +66,7 @@ audit_tree "anchor-lang (default SBF runtime)" \
 checked_fixtures=0
 deferred_spl_fixtures=0
 deferred_v1_fixtures=0
+checked_fixture_manifests=()
 
 while IFS= read -r manifest; do
     if grep -Eq 'anchor-(lang|spl)-v1' "$manifest"; then
@@ -86,10 +87,30 @@ while IFS= read -r manifest; do
 
     audit_tree "$manifest" --manifest-path "$manifest"
     checked_fixtures=$((checked_fixtures + 1))
+    checked_fixture_manifests+=("$manifest")
 done < <(find tests-v2/programs -name Cargo.toml -type f | sort)
 
 echo "audited $checked_fixtures allocator-free V2 fixtures"
 echo "deferred $deferred_spl_fixtures SPL fixtures and $deferred_v1_fixtures V1 fixtures"
+
+# Dependency features alone do not catch an unconditional allocator import in
+# a fixture source file. Audit the source roots of every non-deferred fixture
+# as well. Host-only Vec/String usage remains valid; the compiler-level target
+# check is authoritative for those cfg-sensitive paths. These imports are
+# never valid in the target-facing fixture code and would otherwise let a
+# future fixture bypass this gate.
+for manifest in "${checked_fixture_manifests[@]}"; do
+    fixture_root="$(dirname "$manifest")/src"
+    [[ -d "$fixture_root" ]] || continue
+
+    while IFS= read -r source_file; do
+        if occurrence=$(grep -nE '^[[:space:]]*(extern crate alloc;|use alloc::|alloc::)' "$source_file"); then
+            echo "$occurrence" >&2
+            echo "unclassified allocator import in V2 fixture: $source_file" >&2
+            audit_status=1
+        fi
+    done < <(find "$fixture_root" -type f -name '*.rs' -print | sort)
+done
 
 # The compiler-level bpfel check above is authoritative for cfg-sensitive
 # source. Keep this source check deliberately narrow: these are the runtime
