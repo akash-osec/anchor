@@ -91,27 +91,37 @@ done < <(find tests-v2/programs -name Cargo.toml -type f | sort)
 echo "audited $checked_fixtures allocator-free V2 fixtures"
 echo "deferred $deferred_spl_fixtures SPL fixtures and $deferred_v1_fixtures V1 fixtures"
 
-# These declarations are either host-gated compatibility or test-only code.
-# Any declaration in another runtime source file must be classified explicitly.
-while IFS= read -r occurrence; do
-    [[ -z "$occurrence" ]] && continue
-    source_file="${occurrence%%:*}"
-    case "$source_file" in
-        lang-v2/src/lib.rs | lang-v2/src/instruction.rs)
-            echo "classified host-gated allocator declaration: $occurrence"
-            ;;
-        lang-v2/src/pod.rs)
-            echo "classified test-only allocator declaration: $occurrence"
-            ;;
-        *)
-            echo "unclassified allocator reference: $occurrence" >&2
-            audit_status=1
-            ;;
-    esac
-done < <(
-    grep -RInE --include='*.rs' 'extern crate alloc|alloc::' lang-v2/src \
-        | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//(/|!)?' \
-        || true
+# The compiler-level bpfel check above is authoritative for cfg-sensitive
+# source. Keep this source check deliberately narrow: these are the runtime
+# modules whose target implementation must never mention an allocator-backed
+# type. Host, IDL, compatibility, and test modules contain intentional owned
+# types and are excluded here; their target branches are still compiled by the
+# authoritative check.
+runtime_sources=(
+    lang-v2/src/buffers.rs
+    lang-v2/src/context.rs
+    lang-v2/src/context_cpi.rs
+    lang-v2/src/cpi.rs
+    lang-v2/src/cursor.rs
+    lang-v2/src/dispatch.rs
+    lang-v2/src/fixed_vec.rs
+    lang-v2/src/loader.rs
+    lang-v2/src/program.rs
+    lang-v2/src/system_program.rs
 )
+
+for source_file in "${runtime_sources[@]}"; do
+    if [[ ! -f "$source_file" ]]; then
+        echo "runtime source file is missing: $source_file" >&2
+        audit_status=1
+        continue
+    fi
+
+    if occurrence=$(grep -nE 'extern crate alloc|alloc::|std::(vec::Vec|string::String|boxed::Box|rc::Rc|cell::RefCell)|(^|[^[:alnum:]_])(Vec|String|Box|Rc|RefCell)<|Vec::(with_capacity|collect)' "$source_file"); then
+        echo "$occurrence" >&2
+        echo "allocator-backed runtime reference: $source_file" >&2
+        audit_status=1
+    fi
+done
 
 exit "$audit_status"
