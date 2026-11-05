@@ -273,7 +273,7 @@ pub fn create_nonce_account<'a>(
         to: ctx.accounts.nonce,
     };
     create_account(
-        CpiContext::<_, 2>::new_with_signer_capacity(
+        CpiContext::<_, 2>::new_with_signer(
             ctx.program,
             create_accounts,
             ctx.signer_seeds,
@@ -289,7 +289,7 @@ pub fn create_nonce_account<'a>(
         rent: ctx.accounts.rent,
     };
     initialize_nonce_account::<3>(
-        CpiContext::<_, 3>::new_with_signer_capacity(
+        CpiContext::<_, 3>::new_with_signer(
             ctx.program,
             initialize_accounts,
             ctx.signer_seeds,
@@ -321,7 +321,7 @@ pub fn create_nonce_account_with_seed<'a>(
         base: ctx.accounts.base,
     };
     create_account_with_seed(
-        CpiContext::<_, 3>::new_with_signer_capacity(
+        CpiContext::<_, 3>::new_with_signer(
             ctx.program,
             create_accounts,
             ctx.signer_seeds,
@@ -338,7 +338,7 @@ pub fn create_nonce_account_with_seed<'a>(
         rent: ctx.accounts.rent,
     };
     initialize_nonce_account::<3>(
-        CpiContext::<_, 3>::new_with_signer_capacity(
+        CpiContext::<_, 3>::new_with_signer(
             ctx.program,
             initialize_accounts,
             ctx.signer_seeds,
