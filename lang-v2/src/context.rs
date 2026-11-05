@@ -63,8 +63,16 @@ impl<'a> RemainingAccounts<'a> {
 
     #[inline]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = AccountView> + '_ {
-        // SAFETY: `start` identifies a consumed record boundary.
-        let ptr = unsafe { AccountCursor::record_at(self.input_start, self.start) };
+        // Do not walk to the end of the serialized region for an empty view.
+        // Apart from being unnecessary, that would form a pointer at the end
+        // of the runtime input without ever yielding an account. `next` never
+        // dereferences this field while `remaining == 0`.
+        let ptr = if self.is_empty() {
+            core::ptr::null_mut()
+        } else {
+            // SAFETY: `start` identifies a consumed record boundary.
+            unsafe { AccountCursor::record_at(self.input_start, self.start) }
+        };
         RemainingAccountsIter {
             input_start: self.input_start,
             ptr,

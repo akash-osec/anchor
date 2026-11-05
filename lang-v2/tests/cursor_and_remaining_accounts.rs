@@ -264,7 +264,10 @@ fn remaining_accounts_returns_empty_when_nothing_trails() {
     let mut ctx: Context<'_, DummyHeader> =
         Context::new(&program_id, DummyHeader, (), &mut cursor, 0);
 
-    assert!(ctx.remaining_accounts().is_empty());
+    let remaining = ctx.remaining_accounts();
+    assert!(remaining.is_empty());
+    let mut iter = remaining.iter();
+    assert!(iter.next().is_none());
     // Second call on empty — still empty, no cache bookkeeping bug.
     assert!(ctx.remaining_accounts().is_empty());
 }
