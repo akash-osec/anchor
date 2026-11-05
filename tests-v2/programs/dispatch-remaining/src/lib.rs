@@ -26,7 +26,6 @@ pub mod dispatch_remaining {
 
     #[discrim = 2]
     pub fn read_remaining_once(ctx: &mut Context<ReadRemaining>, expected_count: u8) -> Result<()> {
-        let counter = *ctx.accounts.counter.account().address();
         let remaining = ctx.remaining_accounts();
         if remaining.len() != expected_count as usize {
             return Err(ProgramError::InvalidArgument.into());
@@ -50,19 +49,28 @@ pub mod dispatch_remaining {
             if accounts.len() != 2 {
                 return Err(ProgramError::InvalidArgument.into());
             }
-            [*accounts[0].address(), *accounts[1].address()]
+            [
+                *accounts
+                    .get(0)
+                    .ok_or(ProgramError::InvalidArgument)?
+                    .address(),
+                *accounts
+                    .get(1)
+                    .ok_or(ProgramError::InvalidArgument)?
+                    .address(),
+            ]
         };
         let second = ctx.remaining_accounts();
         if second.len() != 2 {
             return Err(ProgramError::InvalidArgument.into());
         }
-        if first.get(0).ok_or(ProgramError::InvalidArgument)?.address()
-            != second
+        if first[0]
+            != *second
                 .get(0)
                 .ok_or(ProgramError::InvalidArgument)?
                 .address()
-            || first.get(1).ok_or(ProgramError::InvalidArgument)?.address()
-                != second
+            || first[1]
+                != *second
                     .get(1)
                     .ok_or(ProgramError::InvalidArgument)?
                     .address()
