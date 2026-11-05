@@ -1,6 +1,5 @@
 //! Lazy cursor over the serialized instruction input buffer.
 //!
-<<<<<<< HEAD
 //! [`AccountCursor`] walks account records on demand. Duplicate records are
 //! resolved by rescanning previously consumed records, which avoids reserving
 //! transaction-wide account-view storage in the entrypoint frame.
