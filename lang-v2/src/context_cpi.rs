@@ -167,6 +167,9 @@ where
     /// [`ToCpiAccountsWithCapacity::to_instruction_accounts_with_capacity`];
     /// only those indices may omit
     /// handles for readonly program-id metas.
+    ///
+    /// `N` covers all instruction metas, including optional slots and remaining
+    /// accounts, as well as the supplied handles.
     pub fn invoke_ix<I: CpiInstruction>(&self, ix: I) -> ProgramResult {
         require!(
             address_eq(self.program, ix.program_id()),
@@ -180,25 +183,13 @@ where
                 .map_err(|_| ProgramError::InvalidArgument)?;
         }
 
-        let mut optional_sentinel_flags = self
+        let optional_sentinel_flags = self
             .accounts
             .optional_account_sentinel_flags_with_capacity()?;
-        let instruction_account_count = ix.with_instruction_accounts(|accounts| accounts.len());
-        require!(
-            optional_sentinel_flags.len() <= instruction_account_count
-                && instruction_account_count <= optional_sentinel_flags.capacity(),
-            ProgramError::InvalidArgument
-        );
-        // Trailing metas (e.g. remaining accounts already baked into `ix`) are
-        // never treated as optional sentinels from this accounts struct.
-        while optional_sentinel_flags.len() < instruction_account_count {
-            optional_sentinel_flags
-                .try_push(false)
-                .map_err(|_| ProgramError::InvalidArgument)?;
-        }
 
         crate::program::invoke_signed_with_optional_sentinels_with_capacity::<N, I>(
             &ix,
+            self.program,
             &handles,
             self.signer_seeds,
             &optional_sentinel_flags,

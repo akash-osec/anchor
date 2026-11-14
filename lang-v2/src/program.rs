@@ -16,80 +16,9 @@ pub fn get_return_data() -> Option<(crate::Address, pinocchio::cpi::ReturnData)>
     pinocchio::cpi::get_return_data().map(|data| (*data.program_id(), data))
 }
 
-/// Invoke a cross-program instruction using Anchor v2 CPI handles.
-///
-/// Unlike the legacy `AccountInfo` API, callers pass [`CpiHandle`]s obtained
-/// from `cpi_handle()` / `cpi_handle_mut()`, so CPI account lifetimes remain
-/// tied to Rust borrows of the caller's typed accounts.
-///
-/// Optional program-id sentinel metas from `Option::None` CPI slots are not
-/// inferred from address alone — use
-/// [`invoke_with_optional_sentinels`] / [`invoke_signed_with_optional_sentinels`]
-/// (or [`crate::CpiContext`]) so required readonly program-id accounts still
-/// require matching handles.
-pub fn invoke<'a, I>(instruction: &I, account_handles: &[CpiHandle<'a>]) -> ProgramResult
-where
-    I: CpiInstruction + ?Sized,
-{
-    invoke_signed(instruction, account_handles, &[])
-}
-
-/// Like [`invoke`], but marks instruction-account indices that are intentional
-/// optional `None` program-id sentinels (parallel to
-/// [`crate::ToCpiAccountsWithCapacity::optional_account_sentinel_flags_with_capacity`]).
-pub fn invoke_with_optional_sentinels<'a, I>(
-    instruction: &I,
-    account_handles: &[CpiHandle<'a>],
-    optional_sentinel_flags: &[bool],
-) -> ProgramResult
-where
-    I: CpiInstruction + ?Sized,
-{
-    invoke_signed_with_optional_sentinels(
-        instruction,
-        account_handles,
-        &[],
-        optional_sentinel_flags,
-    )
-}
-
-/// Invoke a cross-program instruction with PDA signer seeds using Anchor v2
-/// CPI handles.
-pub fn invoke_signed<'a, 'seeds, I>(
-    instruction: &I,
-    account_handles: &[CpiHandle<'a>],
-    signer_seeds: &'seeds [&'seeds [&'seeds [u8]]],
-) -> ProgramResult
-where
-    I: CpiInstruction + ?Sized,
-{
-    invoke_signed_with_optional_sentinels(instruction, account_handles, signer_seeds, &[])
-}
-
-/// Like [`invoke_signed`], with an explicit optional-sentinel mask.
-pub fn invoke_signed_with_optional_sentinels<'a, 'seeds, I>(
-    instruction: &I,
-    account_handles: &[CpiHandle<'a>],
-    signer_seeds: &'seeds [&'seeds [&'seeds [u8]]],
-    optional_sentinel_flags: &[bool],
-) -> ProgramResult
-where
-    I: CpiInstruction + ?Sized,
-{
-    invoke_signed_with_optional_sentinels_with_capacity::<{ pinocchio::MAX_TX_ACCOUNTS }, I>(
-        instruction,
-        account_handles,
-        signer_seeds,
-        optional_sentinel_flags,
-    )
-}
-
-/// Capacity-aware implementation used by [`crate::CpiContext`]. The public
-/// slice-based compatibility functions retain their protocol-sized fallback,
-/// while generated CPI calls use the capacity selected by their context.
-#[doc(hidden)]
 pub(crate) fn invoke_signed_with_optional_sentinels_with_capacity<'a, 'seeds, const N: usize, I>(
     instruction: &I,
+    program_id: &Address,
     account_handles: &[CpiHandle<'a>],
     signer_seeds: &'seeds [&'seeds [&'seeds [u8]]],
     optional_sentinel_flags: &[bool],
@@ -98,7 +27,11 @@ where
     I: CpiInstruction + ?Sized,
 {
     instruction.with_instruction_accounts(|instruction_accounts| {
-        let program_id = instruction.program_id();
+        require!(
+            optional_sentinel_flags.len() <= instruction_accounts.len()
+                && instruction_accounts.len() <= N,
+            ProgramError::InvalidArgument
+        );
         let data = instruction.data();
         let cpi_account_count = validate_instruction_accounts::<N>(
             instruction_accounts,
@@ -111,114 +44,6 @@ where
         // Keep validation and invocation inside the same callback. Some
         // CpiInstruction implementations build a temporary account slice, so
         // fetching it again after validation could observe a different view.
-        unsafe {
-            invoke_signed_unchecked_with_accounts::<N>(
-                program_id,
-                data,
-                instruction_accounts,
-                account_handles,
-                signer_seeds,
-                cpi_account_count,
-            )
-        }
-    })
-}
-
-/// Invoke a cross-program instruction without borrow validation.
-///
-/// # Safety
-///
-/// The caller must ensure no live Rust references or stale `AccountView` data
-/// borrows can be invalidated by the callee. Prefer [`invoke`] unless this is
-/// being used through a higher-level API that already enforces those lifetimes.
-pub unsafe fn invoke_unchecked<'a, I>(
-    instruction: &I,
-    account_handles: &[CpiHandle<'a>],
-) -> ProgramResult
-where
-    I: CpiInstruction + ?Sized,
-{
-    unsafe { invoke_signed_unchecked(instruction, account_handles, &[]) }
-}
-
-/// Invoke a cross-program instruction with PDA signer seeds, without borrow
-/// validation.
-///
-/// # Safety
-///
-/// The caller must ensure no live Rust references or stale `AccountView` data
-/// borrows can be invalidated by the callee. Prefer [`invoke_signed`] unless
-/// this is being used through a higher-level API that already enforces those
-/// lifetimes.
-pub unsafe fn invoke_signed_unchecked<'a, 'seeds, I>(
-    instruction: &I,
-    account_handles: &[CpiHandle<'a>],
-    signer_seeds: &'seeds [&'seeds [&'seeds [u8]]],
-) -> ProgramResult
-where
-    I: CpiInstruction + ?Sized,
-{
-    unsafe {
-        invoke_signed_unchecked_with_optional_sentinels(
-            instruction,
-            account_handles,
-            signer_seeds,
-            &[],
-        )
-    }
-}
-
-/// Like [`invoke_signed_unchecked`], with an explicit optional-sentinel mask.
-///
-/// # Safety
-///
-/// Same as [`invoke_signed_unchecked`].
-pub unsafe fn invoke_signed_unchecked_with_optional_sentinels<'a, 'seeds, I>(
-    instruction: &I,
-    account_handles: &[CpiHandle<'a>],
-    signer_seeds: &'seeds [&'seeds [&'seeds [u8]]],
-    optional_sentinel_flags: &[bool],
-) -> ProgramResult
-where
-    I: CpiInstruction + ?Sized,
-{
-    unsafe {
-        invoke_signed_unchecked_with_optional_sentinels_with_capacity::<
-            { pinocchio::MAX_TX_ACCOUNTS },
-            I,
-        >(
-            instruction,
-            account_handles,
-            signer_seeds,
-            optional_sentinel_flags,
-        )
-    }
-}
-
-unsafe fn invoke_signed_unchecked_with_optional_sentinels_with_capacity<
-    'a,
-    'seeds,
-    const N: usize,
-    I,
->(
-    instruction: &I,
-    account_handles: &[CpiHandle<'a>],
-    signer_seeds: &'seeds [&'seeds [&'seeds [u8]]],
-    optional_sentinel_flags: &[bool],
-) -> ProgramResult
-where
-    I: CpiInstruction + ?Sized,
-{
-    instruction.with_instruction_accounts(|instruction_accounts| {
-        let program_id = instruction.program_id();
-        let data = instruction.data();
-        let cpi_account_count = walk_instruction_account_bindings::<N>(
-            instruction_accounts,
-            program_id,
-            account_handles,
-            optional_sentinel_flags,
-            |_, _| Ok(()),
-        )?;
         unsafe {
             invoke_signed_unchecked_with_accounts::<N>(
                 program_id,
