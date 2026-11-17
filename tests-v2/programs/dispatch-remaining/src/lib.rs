@@ -26,12 +26,17 @@ pub mod dispatch_remaining {
 
     #[discrim = 2]
     pub fn read_remaining_once(ctx: &mut Context<ReadRemaining>, expected_count: u8) -> Result<()> {
-        let counter = *ctx.accounts.counter.account().address();
         let remaining = ctx.remaining_accounts();
         if remaining.len() != expected_count as usize {
             return Err(ProgramError::InvalidArgument.into());
         }
-        if expected_count == 2 && remaining[0].address() != &counter {
+        if expected_count == 2
+            && remaining
+                .get(0)
+                .ok_or(ProgramError::InvalidArgument)?
+                .address()
+                != ctx.accounts.counter.account().address()
+        {
             return Err(ProgramError::InvalidAccountData.into());
         }
         Ok(())
@@ -44,13 +49,32 @@ pub mod dispatch_remaining {
             if accounts.len() != 2 {
                 return Err(ProgramError::InvalidArgument.into());
             }
-            [*accounts[0].address(), *accounts[1].address()]
+            [
+                *accounts
+                    .get(0)
+                    .ok_or(ProgramError::InvalidArgument)?
+                    .address(),
+                *accounts
+                    .get(1)
+                    .ok_or(ProgramError::InvalidArgument)?
+                    .address(),
+            ]
         };
         let second = ctx.remaining_accounts();
         if second.len() != 2 {
             return Err(ProgramError::InvalidArgument.into());
         }
-        if first[0] != *second[0].address() || first[1] != *second[1].address() {
+        if first[0]
+            != *second
+                .get(0)
+                .ok_or(ProgramError::InvalidArgument)?
+                .address()
+            || first[1]
+                != *second
+                    .get(1)
+                    .ok_or(ProgramError::InvalidArgument)?
+                    .address()
+        {
             return Err(ProgramError::InvalidAccountData.into());
         }
         Ok(())
@@ -98,7 +122,12 @@ pub mod dispatch_remaining {
         mutable: bool,
     ) -> Result<()> {
         ctx.accounts.counter.value = 7;
-        load_first_remaining(ctx.remaining_accounts()[0], mutable)
+        load_first_remaining(
+            ctx.remaining_accounts()
+                .get(0)
+                .ok_or(ProgramError::InvalidArgument)?,
+            mutable,
+        )
     }
 
     #[discrim = 8]
@@ -107,7 +136,12 @@ pub mod dispatch_remaining {
         mutable: bool,
     ) -> Result<()> {
         let _ = ctx.accounts.counter.value;
-        load_first_remaining(ctx.remaining_accounts()[0], mutable)
+        load_first_remaining(
+            ctx.remaining_accounts()
+                .get(0)
+                .ok_or(ProgramError::InvalidArgument)?,
+            mutable,
+        )
     }
 }
 
